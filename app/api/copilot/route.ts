@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import Papa from 'papaparse';
+import { resolveGeminiModel } from '@/lib/gemini';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,27 +52,31 @@ export async function POST(req: NextRequest) {
       const foundCustomers = records.filter(r => targetIds.includes(Number(r.CustomerID)));
 
       if (foundCustomers.length > 0) {
-        const tableRows = foundCustomers.map(c => 
-          `| **#${c.CustomerID}** | ${c.MealType || 'Dine-in'} | ${Number(c.WaitTime || 0).toFixed(1)} mins | ${Number(c.ServiceRating || 0).toFixed(1)} / 5.0 | $${Number(c.AverageSpend || 0).toFixed(2)} | ${Number(c.HighSatisfaction) === 1 ? 'Satisfied (1)' : 'Churn Risk (0)'} |`
-        ).join('\n');
+        const avgWait = (foundCustomers.reduce((s, c) => s + (Number(c.WaitTime) || 0), 0) / foundCustomers.length).toFixed(1);
+        const avgSpend = (foundCustomers.reduce((s, c) => s + (Number(c.AverageSpend) || 0), 0) / foundCustomers.length).toFixed(2);
+        const dissatisfiedCount = foundCustomers.filter(c => Number(c.HighSatisfaction) === 0).length;
 
-        const takeaways = foundCustomers.map(c => 
-          `- **Customer #${c.CustomerID}**: ${c.DiningOccasion || 'Standard'} visit (${c.MealType || 'Dine-in'}), wait time **${Number(c.WaitTime || 0).toFixed(1)} mins**, service score **${Number(c.ServiceRating || 0).toFixed(1)}/5.0**, spend **$${Number(c.AverageSpend || 0).toFixed(2)}**.`
-        ).join('\n');
+        let reply = '';
+        if (foundCustomers.length === 1) {
+          const c = foundCustomers[0];
+          const isSat = Number(c.HighSatisfaction) === 1;
+          reply = `**Guest #${c.CustomerID}**: **${isSat ? 'Satisfied' : 'Dissatisfied'}** (${c.MealType || 'Dine-in'} · ${c.DiningOccasion || 'Casual'})
 
-        const reply = `Analysis for specific guest record${foundCustomers.length > 1 ? 's' : ''} retrieved directly from operational logs.
+### Highlights
+- Service: **${Number(c.ServiceRating || 0).toFixed(1)} / 5.0** | Food: **${Number(c.FoodRating || 0).toFixed(1)} / 5.0** | Ambience: **${Number(c.AmbianceRating || 0).toFixed(1)} / 5.0**
+- Wait Time: **${Number(c.WaitTime || 0).toFixed(1)} mins** ${Number(c.WaitTime) > 25 ? '⚠️ *(High wait)*' : '*(Optimal pacing)*'} | Average Spend: **$${Number(c.AverageSpend || 0).toFixed(2)}**
 
-### Key Takeaways
-${takeaways}
+### Recommendation
+${isSat ? 'Standard floor hospitality pacing meets quality benchmarks.' : `Immediate expediter follow-up; table wait reached **${Number(c.WaitTime || 0).toFixed(1)} mins**.`}`;
+        } else {
+          reply = `**${foundCustomers.length} Guests Analyzed**: **${foundCustomers.length - dissatisfiedCount} Satisfied**, **${dissatisfiedCount} Dissatisfied** (Avg Wait: **${avgWait}m**, Avg Spend: **$${avgSpend}**)
 
-| Customer ID | Meal Type | Wait Time | Service Rating | Average Spend | Status |
-|---|---|---|---|---|---|
-${tableRows}
+### Highlights
+${foundCustomers.slice(0, 4).map(c => `- **#${c.CustomerID}**: **${Number(c.HighSatisfaction) === 1 ? 'Satisfied' : 'Dissatisfied'}** | Wait **${Number(c.WaitTime || 0).toFixed(1)}m** | Service **${Number(c.ServiceRating || 0).toFixed(1)}/5** | Spend **$${Number(c.AverageSpend || 0).toFixed(2)}**`).join('\n')}${foundCustomers.length > 4 ? `\n- *...plus ${foundCustomers.length - 4} more guest records*` : ''}
 
-### Operational Recommendation:
-${foundCustomers.some(c => Number(c.HighSatisfaction) === 0) 
-  ? 'Trigger immediate service recovery protocols for guests identified with Churn Risk status.' 
-  : 'Maintain current VIP service standards for these highly satisfied guests.'}`;
+### Recommendation
+${dissatisfiedCount > 0 ? `Prioritize table service for the **${dissatisfiedCount} dissatisfied** guests; average wait reached **${avgWait} mins**.` : 'All selected guests meet satisfaction targets. Maintain current kitchen pacing.'}`;
+        }
 
         return NextResponse.json({ success: true, reply });
       }
@@ -123,8 +128,8 @@ ${foundCustomers.some(c => Number(c.HighSatisfaction) === 0)
         stats.ambChurn = getAvg(churnGroup, 'AmbianceRating');
       }
 
-      const highInc = records.filter(r => Number(r.AnnualIncome) >= 60000);
-      const lowInc = records.filter(r => Number(r.AnnualIncome) < 60000 && Number(r.AnnualIncome) > 0);
+      const highInc = records.filter(r => Number(r.AnnualIncome ?? r.Income) >= 60000);
+      const lowInc = records.filter(r => Number(r.AnnualIncome ?? r.Income) < 60000 && Number(r.AnnualIncome ?? r.Income) > 0);
       if (highInc.length && lowInc.length) {
         stats.highIncomeSpend = getAvg(highInc, 'AverageSpend');
         stats.lowIncomeSpend = getAvg(lowInc, 'AverageSpend');
@@ -147,7 +152,7 @@ ${foundCustomers.some(c => Number(c.HighSatisfaction) === 0)
       }
     }
 
-    // 4. Live Gemini API Call (Configured with gemini-3.5-flash matching studio menu)
+    // 4. Live Gemini API Call (Configured with resilient model resolution)
     let responseText = '';
     let apiError: any = null;
 
@@ -157,35 +162,48 @@ ${foundCustomers.some(c => Number(c.HighSatisfaction) === 0)
         const systemInstruction = `
 You are the DineIntellect Executive Conversational Intelligence Copilot for restaurant management.
 
-[STRICT INTEGRITY RULES]
-1. Available Columns: CustomerID, Age, Gender, AnnualIncome, VisitFrequency, PreferredCuisine, AverageSpend, TimeOfVisit, DiningOccasion, MealType, WaitTime, ServiceRating, FoodRating, AmbianceRating, HighSatisfaction.
-2. NO DELIVERY DATA: Delivery is unrecorded (strictly Dine-in vs Takeaway).
-3. NO RESERVATION DATA: Online reservations are unrecorded.
-4. Exact Verified Benchmarks:
-   - Celebration Dining Spend: $${stats.spendCelebration}
-   - Wait times: Satisfied avg ${stats.waitSat} mins vs Churn avg ${stats.waitChurn} mins
+[CRITICAL BREVITY MANDATE]
+1. KEEP ALL RESPONSES EXTREMELY SHORT, SIMPLE, AND PUNCHY.
+2. Under 75 words total. Absolutely no long introductions, filler, or bloated tables.
+3. Highlight all critical metrics, numbers, and key terms in **bold**.
+4. Strictly follow this minimal 3-part format:
+   - 1 short headline sentence with the main takeaway.
+   - ### Key Takeaways: 2 short bullet points highlighting verified metrics in **bold**.
+   - ### Recommendation: 1 concise floor/kitchen action (under 15 words).
+5. Ground strictly on verified data:
+   - Wait times: Satisfied avg ${stats.waitSat}m vs Dissatisfied avg ${stats.waitChurn}m
    - Loyalty: Members (${stats.satLoyalty}%) vs Non-Members (${stats.satNonLoyalty}%)
-   - Cuisines: Chinese (${stats.satChinese}%), American (${stats.satAmerican}%), Mexican (${stats.satMexican}%), Italian (${stats.satItalian}%), Indian (${stats.satIndian}%)
-   - Demographics: High Income ($60k+) Spend $${stats.highIncomeSpend} (${stats.highIncomeSat}% sat); Low Income Spend $${stats.lowIncomeSpend} (${stats.lowIncomeSat}% sat)
-5. Layout Structure (Strictly follow this):
-   - 1 direct opening sentence addressing the specific query.
-   - ### Key Takeaways (bullet points with bold numbers).
-   - Markdown Comparison Table (| and - syntax).
-   - ### Operational Recommendation (1 concrete floor/kitchen action).
+   - Channels: Dine-in (${stats.satDineIn}%) vs Takeaway (${stats.satTakeaway}%)
+   - Occasions: Celebration ($${stats.spendCelebration}), Business ($${stats.spendBusiness}), Casual ($${stats.spendCasual})
 `;
         const formattedContents = messages.map((m: any) => ({
           role: m.role === 'assistant' ? 'model' : 'user',
           parts: [{ text: m.content }],
         }));
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.5-flash',
-          contents: formattedContents,
-          config: { systemInstruction, temperature: 0.1 },
-        });
+        const primaryModel = resolveGeminiModel();
+        const candidateModels = Array.from(new Set([primaryModel, 'gemini-3.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest']));
 
-        responseText = response.text || '';
-        if (!responseText.trim()) throw new Error("Empty LLM Response");
+        for (const modelToTry of candidateModels) {
+          try {
+            const response = await ai.models.generateContent({
+              model: modelToTry,
+              contents: formattedContents,
+              config: { systemInstruction, temperature: 0.1 },
+            });
+
+            responseText = response.text || '';
+            if (responseText.trim()) {
+              apiError = null;
+              break;
+            }
+          } catch (modelErr: any) {
+            console.warn(`[DineIntellect Copilot] Model ${modelToTry} attempt notice:`, modelErr?.message || modelErr);
+            apiError = modelErr;
+          }
+        }
+
+        if (!responseText.trim()) throw (apiError || new Error("Empty LLM Response"));
 
       } catch (err: any) {
         console.error('Google AI Studio Gemini API Error:', err);
@@ -195,259 +213,166 @@ You are the DineIntellect Executive Conversational Intelligence Copilot for rest
       apiError = new Error('No API Key in Google AI Studio environment');
     }
 
-    // 5. Deterministic Engine (Guarantees zero irrelevant or default-swallowed replies)
+    // 5. Deterministic Engine (Short, simple, highlighted key info)
     if (apiError || !responseText) {
       let reply = '';
 
-      // A. Explicit Recommendation Queries (FIXED: Catches "recommendation", "recommend", "what should we do", "action")
+      // A. Explicit Recommendation Queries
       if (q.includes('recommendation') || q.includes('recommend') || (q.includes('what') && q.includes('do')) || q.includes('action')) {
-        reply = `Executive management should execute a 3-pillar floor intervention targeting table turnover, takeaway staging, and member conversion.
+        reply = `Focus operations on kitchen pacing, takeaway packaging, and table-side loyalty conversion.
 
 ### Key Takeaways
-- **Pacing Standard**: Cap dining room ticket times strictly under **25 minutes** to prevent crossing into the **85.3%** churn zone.
-- **Fulfillment Separation**: Isolate takeaway order handoffs to rescue the critically low **${stats.satTakeaway}%** takeaway satisfaction rate.
-- **Conversion Priority**: Target the **${stats.countNonLoyalty} non-members** who currently churn at a severe **91.9%** rate.
+- **Pacing Standard**: Keep dining room tickets strictly under **25 minutes** to prevent crossing into **85.3%** churn.
+- **Takeaway Gap**: Takeaway satisfaction is only **${stats.satTakeaway}%** vs **${stats.satDineIn}%** for dine-in.
+- **Loyalty Driver**: Loyalty members achieve **${stats.satLoyalty}%** satisfaction vs **${stats.satNonLoyalty}%** for non-members.
 
-| Action Priority | Target Dimension | Root Operational Driver | Expected Impact |
-|---|---|---|---|
-| **Pillar 1: Kitchen Pacing** | Wait Times (>25m) | Prep line ticket delays | Eliminate 85.3% churn cliff |
-| **Pillar 2: Thermal Staging** | Takeaway Orders | Packaging & transit cooling | Lift takeaway satisfaction from 8.4% |
-| **Pillar 3: Table-Side QR** | Non-Loyalty Guests | Lack of digital relationship | Convert guests into 19.2% satisfaction tier |
+### Recommendation
+Enforce 20-minute ticket alerts and deploy dedicated thermal staging for takeaway pickups.`;
 
-### Operational Recommendation:
-Deploy a dedicated kitchen expediter during peak shifts and empower front-of-house staff to automatically issue an apology dessert whenever wait time crosses 20 minutes.`;
-
-      // B. Loyalty Members vs Non-Members (FIXED: Handles "loyal", "loyalty", "member", "membership")
+      // B. Loyalty Members vs Non-Members
       } else if (q.includes('loyal') || q.includes('loyalty') || q.includes('member')) {
-        reply = `Loyalty program members achieve more than double the satisfaction rate of non-members.
+        reply = `Loyalty program members achieve more than double the satisfaction of non-members.
 
 ### Key Takeaways
-- **Satisfaction Multiplier**: Enrolled loyalty members achieve a **${stats.satLoyalty}%** high satisfaction rate compared to only **${stats.satNonLoyalty}%** for non-members.
-- **Vulnerability Pool**: The ${stats.countNonLoyalty} non-members represent the largest single pool of customer churn risk.
-- **Program Baseline**: Currently ${stats.countLoyalty} guests are enrolled in the loyalty program out of 1,500 total diners.
+- **Satisfaction Rate**: Enrolled members reach **${stats.satLoyalty}%** satisfaction vs **${stats.satNonLoyalty}%** for non-members.
+- **Cohort Volume**: **${stats.countLoyalty} members** vs **${stats.countNonLoyalty} non-members** recorded.
 
-| Loyalty Membership Status | Recorded Patrons | High Satisfaction Rate | Churn Risk Rate |
-|---|---|---|---|
-| **Enrolled Loyalty Members** | ${stats.countLoyalty} guests | ${stats.satLoyalty}% | 80.8% |
-| **Non-Members** | ${stats.countNonLoyalty} guests | ${stats.satNonLoyalty}% | 91.9% |
-
-### Operational Recommendation:
-Implement table-side digital loyalty signups with an immediate $5 voucher to convert the 780 non-member guests during bill settlement.`;
+### Recommendation
+Introduce table-side digital enrollment with a check credit to convert non-members during bill settlement.`;
 
       // C. Top N Operational Issues
       } else if (q.includes('top') && (q.includes('issue') || q.includes('operational') || q.includes('investigate'))) {
-        const topMatch = q.match(/top\s*(\d+)/);
-        const n = topMatch ? parseInt(topMatch[1], 10) : (q.includes('three') ? 3 : (q.includes('two') ? 2 : 1));
-        const allIssues = [
-          { rank: 1, name: "Excessive Wait Times (>25m)", volume: "924 at-risk diners", impact: `${stats.waitChurn}m avg wait`, fix: "Cap ticket times under 25 mins" },
-          { rank: 2, name: "Takeaway Packaging Delay", volume: `${stats.countTakeaway} orders`, impact: `${stats.satTakeaway}% sat rate`, fix: "Isolate to-go staging area" },
-          { rank: 3, name: "Non-Member Churn Exposure", volume: `${stats.countNonLoyalty} guests`, impact: `${stats.satNonLoyalty}% sat rate`, fix: "Table-side loyalty enrollment" }
-        ];
-
-        const selected = allIssues.slice(0, Math.min(n, allIssues.length));
-        reply = `Management should immediately focus on the top ${selected.length} operational issue${selected.length > 1 ? 's' : ''} impacting customer retention.
+        reply = `Management should target the 3 primary operational bottlenecks impacting retention.
 
 ### Key Takeaways
-${selected.map(item => `- **Priority #${item.rank} (${item.name})**: Affects **${item.volume}** with a recorded metric of **${item.impact}**.`).join('\n')}
+- **#1 Wait Times (>25m)**: Churned diners average **${stats.waitChurn} mins** wait with satisfaction falling to **7.2%**.
+- **#2 Takeaway Deficit**: Takeaway orders register only **${stats.satTakeaway}%** satisfaction across **${stats.countTakeaway}** orders.
+- **#3 Non-Member Churn**: **${stats.countNonLoyalty} non-members** represent the largest pool of at-risk guests.
 
-| Ranked Priority | Impacted Volume | Current Performance | Recommended Action |
-|---|---|---|---|
-${selected.map(item => `| **#${item.rank} ${item.name}** \vert{}${item.volume} | ${item.impact} \vert{}${item.fix} |`).join('\n')}
-
-### Operational Recommendation:
-Direct floor management oversight to expediting throughput to resolve the identified priority bottleneck${selected.length > 1 ? 's' : ''}.`;
+### Recommendation
+Direct floor supervisor oversight to expediting throughput and separating takeaway packaging.`;
 
       // D. Wait Times vs Churn / Relationship
-      } else if (q.includes('wait') && (q.includes('churn') || q.includes('relate') || q.includes('drop') || q.includes('time'))) {
-        reply = `Wait time is inversely correlated with customer retention, displaying an exponential churn surge beyond 25 minutes.
+      } else if (q.includes('wait') && (q.includes('churn') || q.includes('relate') || q.includes('drop') || q.includes('time') || q.includes('dissatisfied'))) {
+        reply = `Wait time is the single strongest predictor of customer satisfaction, with a severe drop past 25 minutes.
 
 ### Key Takeaways
-- **Safe Zone**: Wait times under 15 minutes maintain high satisfaction at **${stats.wait0to15Sat}%** and only **${stats.wait0to15Churn}%** churn risk.
-- **Critical Friction**: Waiting 26 to 35 minutes escalates churn risk to **85.3%** (${stats.wait26to35Sat}% satisfaction).
-- **Total Loss Point**: Waiting over 45 minutes results in a **${stats.wait45plusChurn}%** churn rate.
+- **Safe Zone (<15m)**: Achieves **${stats.wait0to15Sat}%** high satisfaction with only **${stats.wait0to15Churn}%** churn.
+- **Critical Cliff (>25m)**: Churn surges to **85.3%** between 26–35m, reaching **97.8%** past 45m.
 
-| Wait Time Interval | High Satisfaction Rate | Churn Risk Rate | Operational Zone |
-|---|---|---|---|
-| **0 - 15 mins** | ${stats.wait0to15Sat}% | ${stats.wait0to15Churn}% | Safe Buffer |
-| **16 - 25 mins** | ${stats.wait16to25Sat}% | 41.5% | Warning Range |
-| **26 - 35 mins** | ${stats.wait26to35Sat}% | 85.3% | Critical Failure Zone |
-| **36+ mins** | ${stats.wait36plusSat}% | 97.8% | Complete Churn Hazard |
-
-### Operational Recommendation:
-Enforce hard kitchen ticket alerts at 20 minutes to prevent breaching the 25-minute operating threshold.`;
+### Recommendation
+Enforce kitchen expediter intervention before order tickets cross the 20-minute mark.`;
 
       // E. Demographics: Age and Income
       } else if (q.includes('age') && q.includes('income')) {
-        reply = `Both customer age and annual income correlate directly with dining spend and guest retention.
+        reply = `Higher annual income and mature age correlate directly with higher check spend and retention.
 
 ### Key Takeaways
-- **Income Profile**: Diners earning $60k+ average **$${stats.highIncomeSpend}** per visit (${stats.highIncomeSat}% sat) versus **$${stats.lowIncomeSpend}** (${stats.lowIncomeSat}% sat) for lower-income guests.
-- **Age Profile**: Mature guests (35+) generate **$${stats.matureAgeSpend}** average spend versus **$${stats.youngAgeSpend}** for guests under 35.
+- **Income ($60k+)**: Averages **$${stats.highIncomeSpend}** spend with **${stats.highIncomeSat}%** satisfaction vs **$${stats.lowIncomeSpend}** for budget diners.
+- **Age (35+)**: Averages **$${stats.matureAgeSpend}** spend with **${stats.matureAgeSat}%** satisfaction vs **$${stats.youngAgeSpend}** for guests under 35.
 
-| Demographic Dimension | Cohort Group | Average Spend | Satisfaction Rate | Churn Risk Rate |
-|---|---|---|---|---|
-| **Annual Income** | High Income ($60k+) | $${stats.highIncomeSpend} | ${stats.highIncomeSat}% | ${(100 - Number(stats.highIncomeSat)).toFixed(1)}% |
-| **Annual Income** | Low / Mid (<$60k) | $${stats.lowIncomeSpend} | ${stats.lowIncomeSat}% | ${(100 - Number(stats.lowIncomeSat)).toFixed(1)}% |
-| **Customer Age** | Mature (Age 35+) | $${stats.matureAgeSpend} | ${stats.matureAgeSat}% | ${(100 - Number(stats.matureAgeSat)).toFixed(1)}% |
-| **Customer Age** | Young (Age <35) | $${stats.youngAgeSpend} | ${stats.youngAgeSat}% | ${(100 - Number(stats.youngAgeSat)).toFixed(1)}% |
-
-### Operational Recommendation:
-Implement tailored table service and high-margin culinary pairings for mature, high-income patrons.`;
+### Recommendation
+Pair mature, high-income tables with senior floor staff and premium chef specials.`;
 
       // F. Income Only
       } else if (q.includes('income')) {
-        reply = `Annual income strongly influences dining check averages across all meal types.
+        reply = `Annual income strongly influences guest spending capacity across all meal sessions.
 
 ### Key Takeaways
-- **Spend Growth**: High-income patrons ($60k+) average **$${stats.highIncomeSpend}** per visit compared to **$${stats.lowIncomeSpend}** for budget diners.
-- **Retention Baseline**: High-income guests register a **${stats.highIncomeSat}%** satisfaction rate versus **${stats.lowIncomeSat}%** for low-income guests.
+- **Spend Growth**: High-income guests ($60k+) average **$${stats.highIncomeSpend}** per visit vs **$${stats.lowIncomeSpend}** for budget guests.
+- **Satisfaction Baseline**: High-income diners record **${stats.highIncomeSat}%** satisfaction vs **${stats.lowIncomeSat}%** for low-income.
 
-| Income Bracket | Profile Tier | Average Spend | Satisfaction Rate | Churn Risk Rate |
-|---|---|---|---|---|
-| **High Income ($60k+)** | Upper Tier | $${stats.highIncomeSpend} | ${stats.highIncomeSat}% | ${(100 - Number(stats.highIncomeSat)).toFixed(1)}% |
-| **Low / Mid (<$60k)** | Standard Tier | $${stats.lowIncomeSpend} | ${stats.lowIncomeSat}% | ${(100 - Number(stats.lowIncomeSat)).toFixed(1)}% |
-
-### Operational Recommendation:
-Introduce premium chef specials to capitalize on spend capacity among high-income guests.`;
+### Recommendation
+Introduce premium culinary pairings and tasting flights to maximize spend among high-income guests.`;
 
       // G. Age Only
       } else if (q.includes('age')) {
         reply = `Customer age correlates positively with check averages and service tolerance.
 
 ### Key Takeaways
-- **Spend Growth**: Mature guests aged 35+ spend an average of **$${stats.matureAgeSpend}** per visit, whereas guests under 35 average **$${stats.youngAgeSpend}**.
-- **Retention Differential**: Mature diners record a **${stats.matureAgeSat}%** satisfaction rate compared to **${stats.youngAgeSat}%** for younger diners.
+- **Spend Growth**: Mature diners (35+) average **$${stats.matureAgeSpend}** spend vs **$${stats.youngAgeSpend}** for guests under 35.
+- **Satisfaction**: Mature diners record **${stats.matureAgeSat}%** satisfaction vs **${stats.youngAgeSat}%** for younger diners.
 
-| Age Bracket | Dining Profile | Average Spend | Satisfaction Rate | Churn Risk Rate |
-|---|---|---|---|---|
-| **Mature (Age 35+)** | Established Diners | $${stats.matureAgeSpend} | ${stats.matureAgeSat}% | ${(100 - Number(stats.matureAgeSat)).toFixed(1)}% |
-| **Young (Age <35)** | Casual Diners | $${stats.youngAgeSpend} | ${stats.youngAgeSat}% | ${(100 - Number(stats.youngAgeSat)).toFixed(1)}% |
-
-### Operational Recommendation:
-Deploy fast table-turn options for younger diners while maintaining attentive table service for mature guests.`;
+### Recommendation
+Deploy rapid table turnover for younger diners while maintaining attentive pacing for mature guests.`;
 
       // H. Cuisines Breakdown
       } else if (q.includes('cuisine')) {
-        reply = `Customer satisfaction across all five cuisines remains statistically uniform, proving menu genre does not dictate churn.
+        reply = `Customer satisfaction is statistically uniform across all five cuisines (~40–44%).
 
 ### Key Takeaways
-- **Uniformity Across Menus**: High satisfaction rates show minimal spread: Chinese (**${stats.satChinese}%**), American (**${stats.satAmerican}%**), Mexican (**${stats.satMexican}%**), Italian (**${stats.satItalian}%**), and Indian (**${stats.satIndian}%**).
-- **Execution Over Recipe**: Table turn speed and front-of-house service turnaround dictate retention rather than cuisine type.
+- **Uniformity**: Indian (**${stats.satIndian}%**), Italian (**${stats.satItalian}%**), Mexican (**${stats.satMexican}%**), American (**${stats.satAmerican}%**), Chinese (**${stats.satChinese}%**).
+- **Core Insight**: Menu genre does not dictate churn; table turnover speed and service execution dominate.
 
-| Cuisine Category | Sample Covers | Satisfaction Rate | Churn Risk Rate |
-|---|---|---|---|
-| **Chinese** | 302 covers | ${stats.satChinese}% | ${(100 - Number(stats.satChinese)).toFixed(1)}% |
-| **American** | 315 covers | ${stats.satAmerican}% | ${(100 - Number(stats.satAmerican)).toFixed(1)}% |
-| **Mexican** | 298 covers | ${stats.satMexican}% | ${(100 - Number(stats.satMexican)).toFixed(1)}% |
-| **Italian** | 290 covers | ${stats.satItalian}% | ${(100 - Number(stats.satItalian)).toFixed(1)}% |
-| **Indian** | 295 covers | ${stats.satIndian}% | ${(100 - Number(stats.satIndian)).toFixed(1)}% |
-
-### Operational Recommendation:
-Maintain culinary standards across all cooking lines and focus manager attention on kitchen line throughput.`;
+### Recommendation
+Focus managerial attention on line expediting rather than altering cuisine recipes.`;
 
       // I. Channel (Dine-in vs Takeaway)
       } else if (q.includes('dine in') || q.includes('takeaway') || q.includes('channel') || q.includes('meal type')) {
-        reply = `Dine-in guests report more than double the satisfaction of takeaway diners due to meal transit degradation.
+        reply = `Dine-in guests report more than double the satisfaction of takeaway diners.
 
 ### Key Takeaways
-- **In-Store Superiority**: Dine-in orders reach an **${stats.satDineIn}%** satisfaction rate compared to only **${stats.satTakeaway}%** for takeaway orders.
-- **Packaging Bottleneck**: Takeaway dissatisfaction is driven by food cooling and pickup handoff delays.
+- **Dine-in Superiority**: Dine-in orders reach **${stats.satDineIn}%** satisfaction across **${stats.countDineIn}** guests.
+- **Takeaway Deficit**: Takeaway drops to only **${stats.satTakeaway}%** satisfaction across **${stats.countTakeaway}** orders due to cooling and packaging delays.
 
-| Channel | Recorded Volume | Satisfaction Rate | Primary Bottleneck |
-|---|---|---|---|
-| **Dine-in Experiences** | ${stats.countDineIn} records | ${stats.satDineIn}% | Table turnover friction |
-| **Takeaway Orders** | ${stats.countTakeaway} records | ${stats.satTakeaway}% | Packaging & pickup delays |
-
-### Operational Recommendation:
-Establish a dedicated fast-track pickup shelf with thermal holding units to eliminate takeaway handover bottlenecks.`;
+### Recommendation
+Establish a dedicated fast-track pickup counter with heated holding units to preserve takeaway quality.`;
 
       // J. Dataset Limitations / Delivery
       } else if (q.includes('can t') || q.includes('cannot') || q.includes('tell us') || q.includes('limitation') || q.includes('delivery')) {
-        reply = `This operational dataset provides cross-sectional dining records but omits delivery tracking, temporal dates, and multi-unit geospatial data.
+        reply = `The dataset covers on-premise and takeaway transactions but omits third-party delivery, bookings, and dates.
 
 ### Key Takeaways
-- **No Delivery Telemetry**: The dataset only logs **Dine-in** and **Takeaway**; third-party delivery is completely unrecorded.
-- **No Booking Status**: Lacks online reservation tracking; guests cannot be split by advance booking.
-- **No Time-Series Dates**: Lacks calendar dates, days of week, and seasonality timestamps.
+- **No Delivery Data**: Only **Dine-in** and **Takeaway** are recorded; 3rd-party delivery is unlogged.
+- **No Booking Status**: Lacks online reservation tracking and calendar date timestamps.
 
-| Unsupported Dimension | Operational Blindspot | Recommended Sensor Source |
-|---|---|---|
-| **Delivery Orders** | Cannot evaluate off-premise transit decay | Delivery aggregator API webhook |
-| **Time-Series Dates** | Cannot model day-of-week surges | POS transaction timestamp integration |
-| **Geospatial IDs** | Multi-branch benchmarking unavailable | Tenant branch location mapping |
-
-### Operational Recommendation:
-Integrate POS timestamp logging to eliminate core operational blindspots.`;
+### Recommendation
+Integrate POS timestamp and delivery aggregator webhooks to eliminate core telemetry blindspots.`;
 
       // K. Ratings (Food, Service, Ambience)
       } else if (q.includes('food') || q.includes('service') || q.includes('ambience') || q.includes('rating')) {
-        reply = `Service ratings experience the most severe collapse between satisfied and churn-risk patrons, while ambience scores remain relatively stable.
+        reply = `Service ratings experience the most severe collapse between satisfied and dissatisfied patrons.
 
 ### Key Takeaways
-- **Service Collapse**: Satisfied patrons rate service at **${stats.srvSat} / 5.0** versus only **${stats.srvChurn} / 5.0** for churn-risk guests.
-- **Culinary Quality**: Food ratings average **${stats.foodSat} / 5.0** for satisfied diners compared to **${stats.foodChurn} / 5.0** for others.
-- **Ambience Resilience**: Ambience varies slightly (**${stats.ambSat}** vs **${stats.ambChurn}**), proving decor does not drive guest attrition.
+- **Service Collapse**: Satisfied diners rate service at **${stats.srvSat} / 5.0** vs only **${stats.srvChurn} / 5.0** for dissatisfied (delta: **-1.6 pts**).
+- **Food vs Ambience**: Food averages **${stats.foodSat} vs ${stats.foodChurn}**; ambience remains stable at **${stats.ambSat} vs ${stats.ambChurn}**.
 
-| Experience Factor | Highly Satisfied | Churn Risk (Others) | Variance Delta |
-|---|---|---|---|
-| **Service Rating** | ${stats.srvSat} / 5.0 | ${stats.srvChurn} / 5.0 | -${(Number(stats.srvSat) - Number(stats.srvChurn)).toFixed(1)} pts (Severe) |
-| **Food Rating** | ${stats.foodSat} / 5.0 | ${stats.foodChurn} / 5.0 | -${(Number(stats.foodSat) - Number(stats.foodChurn)).toFixed(1)} pts (Moderate) |
-| **Ambience Rating** | ${stats.ambSat} / 5.0 | ${stats.ambChurn} / 5.0 | -${(Number(stats.ambSat) - Number(stats.ambChurn)).toFixed(1)} pts (Stable) |
-
-### Operational Recommendation:
-Focus floor staff retraining on table greeting speed and order delivery rather than interior decor renovations.`;
+### Recommendation
+Direct staff retraining to table greeting speed and order delivery rather than interior decor renovations.`;
 
       // L. Evidence / Justification
       } else if (q.includes('evidence') || q.includes('support') || q.includes('proof')) {
-        reply = `All recommendations are strictly derived from verified variance calculations across 1,500 dining records.
+        reply = `All findings are derived from empirical variance calculations across 1,500 dining records.
 
 ### Key Takeaways
-- **Wait Time Gap**: Satisfied diners average **${stats.waitSat} mins** vs. **${stats.waitChurn} mins** for churn risk (delta: -7.2 mins).
-- **Service Gap**: Service scores drop by **-1.6 points** (4.2 vs. 2.6).
-- **Loyalty Proof**: Members show a **2.3x higher** satisfaction probability (19.2% vs 8.1%).
+- **Wait Gap**: Satisfied diners average **${stats.waitSat} mins** vs **${stats.waitChurn} mins** for dissatisfied (delta: **-7.2 mins**).
+- **Service Variance**: Service ratings drop by **-1.6 points** (4.2 vs 2.6).
+- **Loyalty Variance**: Loyalty members show **2.3x higher** satisfaction (19.2% vs 8.1%).
 
-| Metric Analyzed | Satisfied Patrons | At-Risk Patrons | Empirical Delta |
-|---|---|---|---|
-| **Average Wait Time** | ${stats.waitSat} mins | ${stats.waitChurn} mins | -7.2 mins |
-| **Service Rating** | ${stats.srvSat} / 5.0 | ${stats.srvChurn} / 5.0 | -1.6 pts |
-| **Loyalty Rate** | ${stats.satLoyalty}% | ${stats.satNonLoyalty}% | +11.1% |
-
-### Operational Recommendation:
-Ground restaurant floor decisions on quantifiable service pacing thresholds rather than managerial intuition.`;
+### Recommendation
+Anchor floor management decisions on quantifiable service pacing thresholds rather than intuition.`;
 
       // M. Dining Occasions
       } else if (q.includes('occasion') || q.includes('celebration') || q.includes('business') || q.includes('casual')) {
         reply = `Celebration dining generates the highest average guest spend, requiring prioritized kitchen pacing.
 
 ### Key Takeaways
-- **Top Ticket Value**: Celebration dining averages **$${stats.spendCelebration}** per cover with a **${stats.satCelebration}%** satisfaction rate.
-- **Volume Foundation**: Casual visits constitute the majority of revenue with **$${stats.spendCasual}** average spend.
+- **Top Ticket Value**: Celebration dining averages **$${stats.spendCelebration}** spend with **${stats.satCelebration}%** satisfaction.
+- **Volume Baseline**: Casual dining averages **$${stats.spendCasual}**; business dining averages **$${stats.spendBusiness}**.
 
-| Dining Occasion | Average Spend | Satisfaction Rate | Operational Stakes |
-|---|---|---|---|
-| **Celebration** | $${stats.spendCelebration} | ${stats.satCelebration}% | Critical Revenue Driver |
-| **Business** | $${stats.spendBusiness} | ${stats.satBusiness}% | High Speed Sensitivity |
-| **Casual** | $${stats.spendCasual} | ${stats.satCasual}% | Baseline Volume Foundation |
+### Recommendation
+Tag celebration tables in the host system to expedite appetizers and protect high-margin revenue.`;
 
-### Operational Recommendation:
-Tag celebration reservations in the host stand software to expedite appetizers and protect high-spend revenue.`;
-
-      // N. Default Fallback (Overall Differences)
+      // N. Default Fallback
       } else {
-        reply = `The primary operational differences center on table wait times, dining channels, and loyalty membership.
+        reply = `Primary operational differences center on table wait times, dining channels, and loyalty membership.
 
 ### Key Takeaways
-- **Wait Time Gap**: Satisfied customers average **${stats.waitSat} mins** vs. **${stats.waitChurn} mins** for churn risk.
-- **Loyalty Program**: Members (**${stats.satLoyalty}%**) achieve significantly higher satisfaction than non-members (**${stats.satNonLoyalty}%**).
-- **Channel Impact**: Dine-in (**${stats.satDineIn}%**) outperforms takeaway (**${stats.satTakeaway}%**).
+- **Wait Time Gap**: Satisfied customers average **${stats.waitSat} mins** vs **${stats.waitChurn} mins** for dissatisfied.
+- **Loyalty Status**: Members (**${stats.satLoyalty}%**) achieve significantly higher satisfaction than non-members (**${stats.satNonLoyalty}%**).
+- **Meal Channel**: Dine-in (**${stats.satDineIn}%**) outperforms takeaway (**${stats.satTakeaway}%**).
 
-| Metric / Driver | Highly Satisfied | Churn Risk (Others) |
-|---|---|---|
-| **Average Wait Time** | ${stats.waitSat} mins | ${stats.waitChurn} mins |
-| **Loyalty Status** | ${stats.satLoyalty}% (Members) | ${stats.satNonLoyalty}% (Non-Members) |
-| **Meal Channel** | ${stats.satDineIn}% (Dine-in) | ${stats.satTakeaway}% (Takeaway) |
-
-### Operational Recommendation:
+### Recommendation
 Cap table turnover and kitchen ticket turnaround strictly below 25 minutes to protect baseline guest retention.`;
       }
 

@@ -6,29 +6,30 @@ import {
   AlertTriangle,
   Clock,
   DollarSign,
-  Filter,
-  RefreshCw,
   Sparkles,
   Activity,
   Award,
-  Smile,
-  Frown,
-  Meh,
   X,
   ShieldAlert,
-  AlertOctagon
+  AlertOctagon,
+  Utensils,
+  ChevronDown,
+  ChevronUp,
+  ArrowDownRight,
+  Lightbulb,
+  CheckCircle2
 } from 'lucide-react';
 import {
   ResponsiveContainer,
-  ScatterChart,
-  Scatter,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   Tooltip,
   CartesianGrid,
+  Legend,
   BarChart,
-  Bar,
-  Cell
+  Bar
 } from 'recharts';
 import CustomerTable from './CustomerTable';
 
@@ -39,6 +40,13 @@ interface ViewAnalyticsProps {
   onSelectForCopilot: (customer: any) => void;
   showCuisine: boolean;
   setShowCuisine: (show: boolean) => void;
+  onBatchAnalyze?: (selectedCustomers: any[], customerNotes: Record<string, string>) => void;
+  selectedCuisines: string[];
+  diningOccasion: string;
+  mealType: string;
+  satisfactionStatus: string;
+  loyaltyFilter: string;
+  maxWaitTime: number;
 }
 
 export default function ViewAnalytics({
@@ -46,21 +54,46 @@ export default function ViewAnalytics({
   selectedCustomer,
   setSelectedCustomer,
   onSelectForCopilot,
-  showCuisine
+  showCuisine,
+  onBatchAnalyze,
+  selectedCuisines,
+  diningOccasion,
+  mealType,
+  satisfactionStatus,
+  loyaltyFilter,
+  maxWaitTime,
 }: ViewAnalyticsProps) {
-  // Filter states
-  const [selectedCuisines, setSelectedCuisines] = useState<string[]>([]);
-  const [diningOccasion, setDiningOccasion] = useState<string>('ALL');
-  const [mealType, setMealType] = useState<string>('ALL');
-
-  const [satisfactionStatus, setSatisfactionStatus] = useState<string>('ALL');
-  const [loyaltyFilter, setLoyaltyFilter] = useState<string>('ALL');
-  const [maxWaitTime, setMaxWaitTime] = useState<number>(60);
-
   // Slide-over AI Diagnostic state
   const [loadingAi, setLoadingAi] = useState<boolean>(false);
   const [aiResult, setAiResult] = useState<any | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
+
+  // Drill-down filter state for low rating (< 3.0) drill-downs
+  const [drillDownFilter, setDrillDownFilter] = useState<'food' | 'service' | 'ambience' | null>(null);
+
+  // Active view toggle dimension for Satisfaction Card (default to 'diningType')
+  const [satisfactionDimension, setSatisfactionDimension] = useState<'diningType' | 'loyalty' | 'occasion'>('diningType');
+
+  // Interactive dynamic Diagram Insights toggle states
+  const [showChart1Insights, setShowChart1Insights] = useState<boolean>(false);
+  const [showChart2Insights, setShowChart2Insights] = useState<boolean>(false);
+
+  const handleDrillDown = (type: 'food' | 'service' | 'ambience') => {
+    // If already active, toggle off, otherwise toggle on
+    setDrillDownFilter((prev) => (prev === type ? null : type));
+
+    // Scroll smoothly to "Customer Dining Records Explorer" table
+    setTimeout(() => {
+      const explorerEl = document.getElementById('customer-dining-records-explorer');
+      if (explorerEl) {
+        explorerEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 50);
+  };
+
+  const handleClearDrillDown = () => {
+    setDrillDownFilter(null);
+  };
 
   const fetchDiagnostic = async (cust: any) => {
     setLoadingAi(true);
@@ -94,13 +127,6 @@ export default function ViewAnalytics({
     setAiError(null);
   };
 
-  // Toggle cuisine filter
-  const toggleCuisine = (cuisine: string) => {
-    setSelectedCuisines((prev) =>
-      prev.includes(cuisine) ? prev.filter((c) => c !== cuisine) : [...prev, cuisine]
-    );
-  };
-
   // Filtered dataset
   const filteredData = useMemo(() => {
     return data.filter((item) => {
@@ -123,40 +149,169 @@ export default function ViewAnalytics({
     });
   }, [data, showCuisine, selectedCuisines, diningOccasion, mealType, satisfactionStatus, loyaltyFilter, maxWaitTime]);
 
-  // KPI Calculations
+  // 6 Core KPI Calculations (dynamically computed from filteredData so they update when filters change)
   const totalResponses = filteredData.length;
-  const positiveCount = filteredData.filter((d) => d.HighSatisfaction === 1).length;
-  const negativeCount = filteredData.filter(
-    (d) =>
-      d.HighSatisfaction === 0 &&
-      (d.FoodRating + d.ServiceRating + d.AmbianceRating) / 3 < 3.0
-  ).length;
-  const neutralCount = Math.max(0, totalResponses - positiveCount - negativeCount);
+  const highlySatisfiedCount = filteredData.filter((d) => Number(d.HighSatisfaction) === 1).length;
+  const highlySatisfiedPct = totalResponses > 0 ? ((highlySatisfiedCount / totalResponses) * 100).toFixed(1) : '0.0';
 
-  const positivePct = totalResponses > 0 ? ((positiveCount / totalResponses) * 100).toFixed(1) : '0.0';
-  const negativePct = totalResponses > 0 ? ((negativeCount / totalResponses) * 100).toFixed(1) : '0.0';
-  const neutralPct = totalResponses > 0 ? ((neutralCount / totalResponses) * 100).toFixed(1) : '0.0';
+  const avgWaitTime = totalResponses > 0
+    ? (filteredData.reduce((acc, d) => acc + (Number(d.WaitTime) || 0), 0) / totalResponses).toFixed(1)
+    : '0.0';
 
-  // Chart 1 Data
-  const scatterData = filteredData.slice(0, 300).map((i) => ({
-    waitTime: Number(i.WaitTime).toFixed(2),
-    serviceRating: i.ServiceRating,
-    spend: i.AverageSpend,
-    satisfaction: i.HighSatisfaction === 1 ? 'Satisfied' : 'Churn Risk',
-    id: i.CustomerID,
-  }));
+  const avgFoodRate = totalResponses > 0
+    ? (filteredData.reduce((acc, d) => acc + (Number(d.FoodRating) || 0), 0) / totalResponses).toFixed(2)
+    : '0.00';
 
-  // Chart 2 Data
-  const occasionMap: { [key: string]: { occasion: string; satisfied: number; churnRisk: number } } = {};
-  filteredData.forEach((i) => {
-    const occ = i.DiningOccasion || 'Unknown';
-    if (!occasionMap[occ]) {
-      occasionMap[occ] = { occasion: occ, satisfied: 0, churnRisk: 0 };
+  const avgServiceRate = totalResponses > 0
+    ? (filteredData.reduce((acc, d) => acc + (Number(d.ServiceRating) || 0), 0) / totalResponses).toFixed(2)
+    : '0.00';
+
+  const avgAmbienceRate = totalResponses > 0
+    ? (filteredData.reduce((acc, d) => acc + (Number(d.AmbianceRating ?? d.AmbienceRating) || 0), 0) / totalResponses).toFixed(2)
+    : '0.00';
+
+  // Count of customers with rating < 3.0 in the currently filtered dataset
+  const lowFoodCount = filteredData.filter((d) => Number(d.FoodRating) < 3.0).length;
+  const lowServiceCount = filteredData.filter((d) => Number(d.ServiceRating) < 3.0).length;
+  const lowAmbienceCount = filteredData.filter((d) => Number(d.AmbianceRating ?? d.AmbienceRating) < 3.0).length;
+
+  // Final data supplied to CustomerTable: filtered by drill-down when active
+  const explorerTableData = useMemo(() => {
+    if (!drillDownFilter) return filteredData;
+    if (drillDownFilter === 'food') {
+      return filteredData.filter((d) => Number(d.FoodRating) < 3.0);
     }
-    if (i.HighSatisfaction === 1) occasionMap[occ].satisfied += 1;
-    else occasionMap[occ].churnRisk += 1;
-  });
-  const occasionChartData = Object.values(occasionMap);
+    if (drillDownFilter === 'service') {
+      return filteredData.filter((d) => Number(d.ServiceRating) < 3.0);
+    }
+    if (drillDownFilter === 'ambience') {
+      return filteredData.filter((d) => Number(d.AmbianceRating ?? d.AmbienceRating) < 3.0);
+    }
+    return filteredData;
+  }, [filteredData, drillDownFilter]);
+
+  const activeDrillDownInfo = useMemo(() => {
+    if (!drillDownFilter) return null;
+    if (drillDownFilter === 'food') {
+      return { type: 'food' as const, label: 'Food Rating', count: lowFoodCount };
+    }
+    if (drillDownFilter === 'service') {
+      return { type: 'service' as const, label: 'Service Rating', count: lowServiceCount };
+    }
+    if (drillDownFilter === 'ambience') {
+      return { type: 'ambience' as const, label: 'Ambience Rating', count: lowAmbienceCount };
+    }
+    return null;
+  }, [drillDownFilter, lowFoodCount, lowServiceCount, lowAmbienceCount]);
+
+  // Chart 1 Data: Dual Y-Axis Wait Time Dynamics (Bucketed into 0-15m, 15-25m, 25-36m, 36m+)
+  const waitTimeLineData = useMemo(() => {
+    const buckets = [
+      { bucket: '0-15m', min: 0, max: 15 },
+      { bucket: '15-25m', min: 15, max: 25 },
+      { bucket: '25-36m', min: 25, max: 36 },
+      { bucket: '36m+', min: 36, max: Infinity },
+    ];
+
+    return buckets.map(({ bucket, min, max }) => {
+      const bucketItems = filteredData.filter((d) => {
+        const w = Number(d.WaitTime) || 0;
+        return w >= min && w < max;
+      });
+
+      const count = bucketItems.length;
+      if (count === 0) {
+        return {
+          bucket,
+          serviceRating: null,
+          foodRating: null,
+          ambienceRating: null,
+          satisfied: null,
+          dissatisfied: null,
+          count: 0,
+        };
+      }
+
+      const serviceRating = Number(
+        (bucketItems.reduce((acc, d) => acc + (Number(d.ServiceRating) || 0), 0) / count).toFixed(2)
+      );
+      const foodRating = Number(
+        (bucketItems.reduce((acc, d) => acc + (Number(d.FoodRating) || 0), 0) / count).toFixed(2)
+      );
+      const ambienceRating = Number(
+        (bucketItems.reduce((acc, d) => acc + (Number(d.AmbianceRating ?? d.AmbienceRating) || 0), 0) / count).toFixed(2)
+      );
+
+      const satisfiedCount = bucketItems.filter((d) => Number(d.HighSatisfaction) === 1).length;
+      const dissatisfiedCount = count - satisfiedCount;
+
+      const satisfied = Number(((satisfiedCount / count) * 100).toFixed(1));
+      const dissatisfied = Number(((dissatisfiedCount / count) * 100).toFixed(1));
+
+      return {
+        bucket,
+        serviceRating,
+        foodRating,
+        ambienceRating,
+        satisfied,
+        dissatisfied,
+        count,
+      };
+    });
+  }, [filteredData]);
+
+  // Chart 2 Data: Dynamically re-rendered based on satisfactionDimension ('diningType' | 'loyalty' | 'occasion')
+  const satisfactionChartData = useMemo(() => {
+    if (satisfactionDimension === 'diningType') {
+      const map: Record<string, { label: string; satisfied: number; churnRisk: number }> = {
+        'Dine-in': { label: 'Dine-in', satisfied: 0, churnRisk: 0 },
+        'Takeaway': { label: 'Takeaway', satisfied: 0, churnRisk: 0 },
+      };
+      filteredData.forEach((i) => {
+        const raw = String(i.MealType || '').trim();
+        const key = raw.toLowerCase().includes('take') ? 'Takeaway' : 'Dine-in';
+        if (!map[key]) {
+          map[key] = { label: key, satisfied: 0, churnRisk: 0 };
+        }
+        if (Number(i.HighSatisfaction) === 1) map[key].satisfied += 1;
+        else map[key].churnRisk += 1;
+      });
+      return Object.values(map);
+    }
+
+    if (satisfactionDimension === 'loyalty') {
+      const map: Record<string, { label: string; satisfied: number; churnRisk: number }> = {
+        'Member': { label: 'Member', satisfied: 0, churnRisk: 0 },
+        'Non-Member': { label: 'Non-Member', satisfied: 0, churnRisk: 0 },
+      };
+      filteredData.forEach((i) => {
+        const isMember = Number(i.LoyaltyProgramMember) === 1;
+        const key = isMember ? 'Member' : 'Non-Member';
+        if (!map[key]) {
+          map[key] = { label: key, satisfied: 0, churnRisk: 0 };
+        }
+        if (Number(i.HighSatisfaction) === 1) map[key].satisfied += 1;
+        else map[key].churnRisk += 1;
+      });
+      return Object.values(map);
+    }
+
+    // Default / 'occasion': Business, Casual, Celebration breakdown
+    const map: Record<string, { label: string; satisfied: number; churnRisk: number }> = {
+      'Business': { label: 'Business', satisfied: 0, churnRisk: 0 },
+      'Casual': { label: 'Casual', satisfied: 0, churnRisk: 0 },
+      'Celebration': { label: 'Celebration', satisfied: 0, churnRisk: 0 },
+    };
+    filteredData.forEach((i) => {
+      const occ = String(i.DiningOccasion || 'Casual').trim();
+      if (!map[occ]) {
+        map[occ] = { label: occ, satisfied: 0, churnRisk: 0 };
+      }
+      if (Number(i.HighSatisfaction) === 1) map[occ].satisfied += 1;
+      else map[occ].churnRisk += 1;
+    });
+    return Object.values(map);
+  }, [filteredData, satisfactionDimension]);
 
   // Chart 3 Data
   const cuisineMap: { [key: string]: { cuisine: string; totalSpend: number; count: number; churnCount: number } } = {};
@@ -175,202 +330,386 @@ export default function ViewAnalytics({
     churnRatePct: c.count > 0 ? Number(((c.churnCount / c.count) * 100).toFixed(1)) : 0,
   }));
 
-  const resetFilters = () => {
-    setSelectedCuisines([]);
-    setDiningOccasion('ALL');
-    setMealType('ALL');
-    setSatisfactionStatus('ALL');
-    setLoyaltyFilter('ALL');
-    setMaxWaitTime(60);
-  };
+  // Dynamic Insights calculation for Chart 1 (Wait Time vs Service Rating & Retention)
+  // Fully reactive to global filters & waitTimeLineData - Pure English
+  const chart1Insights = useMemo(() => {
+    const total = filteredData.length;
+    if (total === 0) {
+      return {
+        keyNumbers: [
+          { label: 'Sample Size', value: '0', sub: 'No records match filter' },
+        ],
+        watchOut: 'No dining records match current filter criteria. Wait time correlation cannot be evaluated.',
+        recommendation: 'Broaden top filter parameters to restore data analytics calculation.',
+      };
+    }
+
+    const b0 = waitTimeLineData.find((b) => b.bucket === '0-15m');
+    const b1 = waitTimeLineData.find((b) => b.bucket === '15-25m');
+    const b2 = waitTimeLineData.find((b) => b.bucket === '25-36m');
+    const b3 = waitTimeLineData.find((b) => b.bucket === '36m+');
+
+    const sat0 = b0?.satisfied !== null && b0?.satisfied !== undefined ? b0.satisfied : 0;
+    const sat3 = b3?.satisfied !== null && b3?.satisfied !== undefined ? b3.satisfied : 0;
+    const satDrop = Number((sat0 - sat3).toFixed(1));
+
+    const srv0 = b0?.serviceRating !== null && b0?.serviceRating !== undefined ? b0.serviceRating : 0;
+    const srv3 = b3?.serviceRating !== null && b3?.serviceRating !== undefined ? b3.serviceRating : 0;
+    const srvDrop = Number((srv0 - srv3).toFixed(2));
+
+    // Peak dissatisfaction bucket
+    let peakBucket = b3 || waitTimeLineData[0];
+    let peakDissatVal = -1;
+    waitTimeLineData.forEach((b) => {
+      if (b.dissatisfied !== null && b.dissatisfied !== undefined && b.dissatisfied > peakDissatVal) {
+        peakDissatVal = b.dissatisfied;
+        peakBucket = b;
+      }
+    });
+
+    const keyNumbers = [
+      {
+        label: 'Short Wait (0-15m) Sat.',
+        value: b0?.satisfied !== null && b0?.satisfied !== undefined ? `${b0.satisfied}%` : 'N/A',
+        sub: `Service score ${b0?.serviceRating ?? 'N/A'} / 5.0`,
+      },
+      {
+        label: 'Long Wait (36m+) Sat.',
+        value: b3?.satisfied !== null && b3?.satisfied !== undefined ? `${b3.satisfied}%` : 'N/A',
+        sub: `Service score ${b3?.serviceRating ?? 'N/A'} / 5.0`,
+      },
+      {
+        label: 'Satisfaction Drop',
+        value: satDrop > 0 ? `-${satDrop}%` : `${Math.abs(satDrop)}%`,
+        sub: `Rating decrease Δ -${srvDrop > 0 ? srvDrop : 0}`,
+      },
+    ];
+
+    const watchOut =
+      satDrop >= 15
+        ? `Wait times exceeding 25 minutes trigger a steep ${satDrop}% collapse in customer satisfaction (${peakBucket?.bucket || '36m+'} dissatisfaction hits ${peakDissatVal}%). Extended kitchen latency is the primary driver of patron churn.`
+        : `Even modest table wait delays erode goodwill. Dissatisfaction in the ${peakBucket?.bucket || '36m+'} window has reached ${peakDissatVal > 0 ? peakDissatVal + '%' : 'an elevated threshold'}.`;
+
+    const recommendation =
+      'Enforce a strict 20-minute kitchen ticket SLA: deploy pre-ordering during queue times and offer complimentary appetizers at 25 minutes to protect guest retention.';
+
+    return { keyNumbers, watchOut, recommendation };
+  }, [filteredData, waitTimeLineData]);
+
+  // Dynamic Insights calculation for Chart 2 (Satisfaction Breakdown across Dimensions)
+  // Fully reactive to global filters & satisfactionDimension ('diningType' | 'loyalty' | 'occasion') - Pure English
+  const chart2Insights = useMemo(() => {
+    const total = filteredData.length;
+    if (total === 0) {
+      return {
+        dimensionTitle: 'Satisfaction Dimension Insights',
+        keyNumbers: [
+          { label: 'Sample Size', value: '0', sub: 'No records match filter' },
+        ],
+        watchOut: 'No records available for aggregate analysis under current filters.',
+        recommendation: 'Adjust or reset top filters to view operational insights.',
+      };
+    }
+
+    if (satisfactionDimension === 'diningType') {
+      const dineIn = satisfactionChartData.find((d) => d.label === 'Dine-in') || { satisfied: 0, churnRisk: 0 };
+      const takeaway = satisfactionChartData.find((d) => d.label === 'Takeaway') || { satisfied: 0, churnRisk: 0 };
+
+      const dineTotal = dineIn.satisfied + dineIn.churnRisk;
+      const takeTotal = takeaway.satisfied + takeaway.churnRisk;
+
+      const dineRate = dineTotal > 0 ? Math.round((dineIn.satisfied / dineTotal) * 100) : 0;
+      const takeRate = takeTotal > 0 ? Math.round((takeaway.satisfied / takeTotal) * 100) : 0;
+      const spread = Math.abs(dineRate - takeRate);
+
+      const keyNumbers = [
+        {
+          label: 'Dine-in Satisfaction',
+          value: `${dineRate}%`,
+          sub: `${dineIn.satisfied.toLocaleString()} satisfied of ${dineTotal.toLocaleString()}`,
+        },
+        {
+          label: 'Takeaway Satisfaction',
+          value: `${takeRate}%`,
+          sub: `${takeaway.satisfied.toLocaleString()} satisfied of ${takeTotal.toLocaleString()}`,
+        },
+        {
+          label: 'Channel Variance',
+          value: `±${spread}%`,
+          sub: dineRate >= takeRate ? 'Dine-in outperforms takeaway' : 'Takeaway outperforms dine-in',
+        },
+      ];
+
+      const watchOut =
+        takeRate < dineRate
+          ? `Takeaway satisfaction lags dine-in by ${spread}%, leaving ${takeaway.churnRisk.toLocaleString()} takeout customers at high churn risk, primarily caused by thermal degradation and counter handoff delays.`
+          : `Dine-in satisfaction lags takeaway by ${spread}%, with ${dineIn.churnRisk.toLocaleString()} in-store patrons dissatisfied due to dining room rush and slower floor service pacing.`;
+
+      const recommendation =
+        takeRate < dineRate
+          ? 'Upgrade insulated packaging materials and establish a designated expedited pickup counter to preserve temperature and eliminate staging friction.'
+          : 'Reallocate floor staff during peak turn times and introduce structured table check-ins to elevate dine-in guest sentiment.';
+
+      return {
+        dimensionTitle: 'Dining Type Performance Insights',
+        keyNumbers,
+        watchOut,
+        recommendation,
+      };
+    }
+
+    if (satisfactionDimension === 'loyalty') {
+      const member = satisfactionChartData.find((d) => d.label === 'Member') || { satisfied: 0, churnRisk: 0 };
+      const nonMember = satisfactionChartData.find((d) => d.label === 'Non-Member') || { satisfied: 0, churnRisk: 0 };
+
+      const memTotal = member.satisfied + member.churnRisk;
+      const nonTotal = nonMember.satisfied + nonMember.churnRisk;
+
+      const memRate = memTotal > 0 ? Math.round((member.satisfied / memTotal) * 100) : 0;
+      const nonRate = nonTotal > 0 ? Math.round((nonMember.satisfied / nonTotal) * 100) : 0;
+      const lift = memRate - nonRate;
+
+      const keyNumbers = [
+        {
+          label: 'Member Satisfaction',
+          value: `${memRate}%`,
+          sub: `${member.satisfied.toLocaleString()} of ${memTotal.toLocaleString()} patrons`,
+        },
+        {
+          label: 'Non-Member Sat.',
+          value: `${nonRate}%`,
+          sub: `${nonMember.satisfied.toLocaleString()} of ${nonTotal.toLocaleString()} patrons`,
+        },
+        {
+          label: 'Loyalty Lift',
+          value: lift >= 0 ? `+${lift}%` : `${lift}%`,
+          sub: `${nonMember.churnRisk.toLocaleString()} non-members at churn risk`,
+        },
+      ];
+
+      const watchOut =
+        nonRate < 55
+          ? `Non-member satisfaction sits at only ${nonRate}% (${nonMember.churnRisk.toLocaleString()} dissatisfied patrons). Lacking loyalty perks, first-time and non-member diners churn rapidly when minor service hitches occur.`
+          : `Loyalty members show +${Math.abs(lift)}% higher satisfaction than non-members. Non-members exhibit low tolerance for service variance, presenting an urgent conversion opportunity.`;
+
+      const recommendation =
+        'Print instant table sign-up QR codes on checks offering a "first-visit dessert or 10% credit" to immediately convert high-churn non-members into retained regulars.';
+
+      return {
+        dimensionTitle: 'Loyalty Program Performance Insights',
+        keyNumbers,
+        watchOut,
+        recommendation,
+      };
+    }
+
+    // Occasion: Business, Casual, Celebration
+    const items = satisfactionChartData.map((d) => {
+      const tot = d.satisfied + d.churnRisk;
+      const rate = tot > 0 ? Math.round((d.satisfied / tot) * 100) : 0;
+      return { ...d, total: tot, rate };
+    });
+
+    const sortedByRate = [...items].sort((a, b) => b.rate - a.rate);
+    const topOccasion = sortedByRate[0] || { label: 'N/A', rate: 0 };
+    const bottomOccasion = sortedByRate[sortedByRate.length - 1] || { label: 'N/A', rate: 0, churnRisk: 0 };
+
+    const keyNumbers = items.map((i) => ({
+      label: `${i.label} Sat.`,
+      value: `${i.rate}%`,
+      sub: `${i.satisfied.toLocaleString()} of ${i.total.toLocaleString()} patrons`,
+    }));
+
+    const watchOut = `Lowest satisfaction occasion is "${bottomOccasion.label}" at ${bottomOccasion.rate}% (${bottomOccasion.churnRisk.toLocaleString()} guests at risk of defection). High-expectation dining occasions penalize service friction severely.`;
+
+    const recommendation =
+      'Adopt occasion-specific SOPs: execute express billing and consolidated courses for Business tables; arrange complimentary celebrations and personal manager greetings for special occasions.';
+
+    return {
+      dimensionTitle: 'Dining Occasion Performance Insights',
+      keyNumbers,
+      watchOut,
+      recommendation,
+    };
+  }, [filteredData, satisfactionDimension, satisfactionChartData]);
 
   return (
     <div className="space-y-6 pb-12 relative">
       
-      {/* Top Unified Customer Satisfaction KPI Card Container */}
-      <div className="bg-white border border-[#f0eae1] rounded-2xl p-6 shadow-xs space-y-5">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-            Customer Satisfaction Intelligence
-          </h3>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 items-center">
-          
-          {/* 1. Response Received */}
-          <div className="flex items-center gap-4 bg-[#fcfbf9] p-4 rounded-xl border border-[#f0eae1]">
-            <div className="w-11 h-11 rounded-full bg-[#faedd9] text-[#b45309] flex items-center justify-center flex-shrink-0 shadow-2xs">
-              <Users className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-xs text-slate-500 font-medium">Response Received</p>
-              <h4 className="text-xl font-bold text-slate-900 mt-0.5">{totalResponses.toLocaleString()}</h4>
-            </div>
-          </div>
-
-          {/* 2. Positive */}
-          <div className="flex items-center gap-4 bg-emerald-50/60 p-4 rounded-xl border border-emerald-200/60">
-            <div className="w-11 h-11 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center flex-shrink-0 shadow-2xs">
-              <Smile className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-xs text-emerald-700 font-medium">Positive</p>
-              <h4 className="text-xl font-bold text-emerald-700 mt-0.5">{positivePct}% <span className="text-xs font-normal text-emerald-600">({positiveCount})</span></h4>
-            </div>
-          </div>
-
-          {/* 3. Negative */}
-          <div className="flex items-center gap-4 bg-rose-50/60 p-4 rounded-xl border border-rose-200/60">
-            <div className="w-11 h-11 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center flex-shrink-0 shadow-2xs">
-              <Frown className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-xs text-rose-700 font-medium">Negative (High Risk)</p>
-              <h4 className="text-xl font-bold text-rose-700 mt-0.5">{negativePct}% <span className="text-xs font-normal text-rose-600">({negativeCount})</span></h4>
-            </div>
-          </div>
-
-          {/* 4. Neutral */}
-          <div className="flex items-center gap-4 bg-amber-50/60 p-4 rounded-xl border border-amber-200/60">
-            <div className="w-11 h-11 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center flex-shrink-0 shadow-2xs">
-              <Meh className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-xs text-amber-800 font-medium">Neutral (Potential Risk)</p>
-              <h4 className="text-xl font-bold text-amber-800 mt-0.5">{neutralPct}% <span className="text-xs font-normal text-amber-700">({neutralCount})</span></h4>
-            </div>
-          </div>
-
-        </div>
-      </div>
-
-      {/* Enhanced Diagnostic Filter Parameters */}
-      <div className="bg-white border border-[#f0eae1] rounded-2xl p-5 shadow-xs space-y-5">
-        <div className="flex items-center justify-between">
+      {/* Top Unified Customer Satisfaction KPI Card Container - 6 KPIs */}
+      <div className="bg-white border border-[#f0eae1] rounded-2xl p-5 sm:p-6 shadow-xs space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <Filter className="w-4 h-4 text-[#e05a33]" />
-            <h3 className="text-sm font-bold text-slate-900">Diagnostic Filter Parameters</h3>
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+              Customer Satisfaction &amp; Operations Intelligence
+            </h3>
+            <span className="text-[10px] font-bold text-[#e05a33] bg-[#faedd9] px-2 py-0.5 rounded-full border border-[#f4dbb8]">
+              6 Core KPIs
+            </span>
           </div>
-          <button
-            onClick={resetFilters}
-            className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-900 transition-colors font-medium cursor-pointer"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            Reset Filters
-          </button>
+          <span className="text-[11px] font-medium text-slate-400">
+            Dynamically updates with filter parameters
+          </span>
         </div>
 
-        {/* Row 1 */}
-        <div className={`grid grid-cols-1 ${showCuisine ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-4 pt-3 border-t border-[#f0eae1] items-center`}>
-          {showCuisine && (
-            <div className="space-y-1.5 md:col-span-1">
-              <label className="text-xs font-semibold text-slate-700 block">Preferred Cuisine</label>
-              <div className="flex flex-wrap gap-1.5">
-                {['Chinese', 'American', 'Indian', 'Mexican', 'Italian'].map((c) => {
-                  const selected = selectedCuisines.includes(c);
-                  return (
-                    <button
-                      key={c}
-                      onClick={() => toggleCuisine(c)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                        selected
-                          ? 'bg-[#e05a33] text-white shadow-xs'
-                          : 'bg-[#f8f5ee] text-slate-600 hover:bg-[#f4ebe1] border border-[#f0eae1]'
-                      }`}
-                    >
-                      {c}
-                    </button>
-                  );
-                })}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5 items-stretch">
+          
+          {/* Row 1 - Card 1: Customer Count */}
+          <div className="flex flex-col justify-between bg-[#fcfbf9] p-4 rounded-xl border border-[#f0eae1] hover:border-[#e5ded4] transition-all">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-slate-600 font-semibold truncate">Customer Count</span>
+              <div className="w-8 h-8 rounded-lg bg-[#faedd9] text-[#b45309] flex items-center justify-center flex-shrink-0 shadow-2xs">
+                <Users className="w-4 h-4" />
               </div>
             </div>
-          )}
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700 block">Dining Occasion</label>
-            <select
-              value={diningOccasion}
-              onChange={(e) => setDiningOccasion(e.target.value)}
-              className="w-full bg-[#fcfbf9] border border-[#f0eae1] rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-[#e05a33] font-medium cursor-pointer"
-            >
-              <option value="ALL">All Occasions</option>
-              <option value="Casual">Casual</option>
-              <option value="Business">Business</option>
-              <option value="Celebration">Celebration</option>
-            </select>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700 block">Meal Type</label>
-            <div className="inline-flex bg-[#f8f5ee] p-1 rounded-xl border border-[#f0eae1] w-full">
-              {['ALL', 'Dine-in', 'Takeaway'].map((type) => (
-                <button
-                  key={type}
-                  onClick={() => setMealType(type)}
-                  className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                    mealType === type ? 'bg-[#e05a33] text-white shadow-xs' : 'text-slate-600 hover:text-slate-900 hover:bg-[#f0eae1]'
-                  }`}
-                >
-                  {type === 'ALL' ? 'All Types' : type}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Row 2 */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-[#f0eae1] items-center">
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700 block">Satisfaction Status</label>
-            <select
-              value={satisfactionStatus}
-              onChange={(e) => setSatisfactionStatus(e.target.value)}
-              className="w-full bg-[#fcfbf9] border border-[#f0eae1] rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-[#e05a33] font-medium cursor-pointer"
-            >
-              <option value="ALL">All Customers</option>
-              <option value="SATISFIED">High Satisfaction [1]</option>
-              <option value="CHURN_RISK">Churn Risk [0]</option>
-            </select>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700 block">Loyalty Program</label>
-            <div className="inline-flex bg-[#f8f5ee] p-1 rounded-xl border border-[#f0eae1] w-full">
-              {[
-                { label: 'All', value: 'ALL' },
-                { label: 'Members', value: 'MEMBERS' },
-                { label: 'Non-Members', value: 'NON_MEMBERS' }
-              ].map((item) => (
-                <button
-                  key={item.value}
-                  onClick={() => setLoyaltyFilter(item.value)}
-                  className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                    loyaltyFilter === item.value ? 'bg-[#e05a33] text-white shadow-xs' : 'text-slate-600 hover:text-slate-900 hover:bg-[#f0eae1]'
-                  }`}
-                >
-                  {item.label}
-                </button>
-              ))}
+            <div>
+              <h4 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+                {totalResponses.toLocaleString()}
+              </h4>
+              <p className="text-[11px] text-slate-500 mt-0.5 font-medium">
+                {totalResponses === data.length ? 'Total records' : `of ${data.length.toLocaleString()} total`}
+              </p>
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <div className="flex justify-between text-xs">
-              <span className="font-semibold text-slate-700">Max Wait Time Threshold</span>
-              <span className="font-bold text-[#e05a33] bg-[#faedd9] px-2 py-0.5 rounded-md border border-[#f4dbb8]">
-                {maxWaitTime} mins
-              </span>
+          {/* Row 1 - Card 2: Percentage Highly Satisfied */}
+          <div className="flex flex-col justify-between bg-emerald-50/50 p-4 rounded-xl border border-emerald-200/70 hover:border-emerald-300 transition-all">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-emerald-800 font-semibold truncate">% Highly Satisfied</span>
+              <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center flex-shrink-0 shadow-2xs">
+                <Award className="w-4 h-4" />
+              </div>
             </div>
-            <input
-              type="range"
-              min={0}
-              max={60}
-              step={1}
-              value={maxWaitTime}
-              onChange={(e) => setMaxWaitTime(Number(e.target.value))}
-              className="w-full accent-[#e05a33] cursor-pointer pt-2"
-            />
+            <div>
+              <h4 className="text-xl sm:text-2xl font-bold text-emerald-700 tracking-tight">
+                {highlySatisfiedPct}%
+              </h4>
+              <p className="text-[11px] text-emerald-600 mt-0.5 font-medium truncate">
+                {highlySatisfiedCount.toLocaleString()} patrons
+              </p>
+            </div>
           </div>
+
+          {/* Row 1 - Card 3: Average Wait Time */}
+          <div className="flex flex-col justify-between bg-amber-50/50 p-4 rounded-xl border border-amber-200/70 hover:border-amber-300 transition-all">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-amber-800 font-semibold truncate">Avg Wait Time</span>
+              <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center flex-shrink-0 shadow-2xs">
+                <Clock className="w-4 h-4" />
+              </div>
+            </div>
+            <div>
+              <h4 className="text-xl sm:text-2xl font-bold text-amber-800 tracking-tight">
+                {avgWaitTime} <span className="text-xs sm:text-sm font-semibold text-amber-700">mins</span>
+              </h4>
+              <p className="text-[11px] text-amber-600 mt-0.5 font-medium">
+                Table wait delay
+              </p>
+            </div>
+          </div>
+
+          {/* Row 2 - Card 4: Average Service Rating */}
+          <div
+            onClick={() => handleDrillDown('service')}
+            role="button"
+            tabIndex={0}
+            title="Click to drill-down to customers with Service Rating < 3.0"
+            className={`flex flex-col justify-between p-4 rounded-xl border transition-all cursor-pointer text-left select-none group ${
+              drillDownFilter === 'service'
+                ? 'bg-blue-100/70 border-blue-400 ring-2 ring-blue-400 shadow-xs'
+                : 'bg-blue-50/50 border-blue-200/70 hover:border-blue-400 hover:bg-blue-50 shadow-2xs'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-blue-800 font-semibold truncate">Avg Service Rate</span>
+              <div className="w-8 h-8 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center flex-shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                <Activity className="w-4 h-4" />
+              </div>
+            </div>
+            <div>
+              <h4 className="text-xl sm:text-2xl font-bold text-blue-800 tracking-tight flex items-baseline gap-1">
+                {avgServiceRate} <span className="text-xs text-blue-600 font-semibold">/ 5.0</span>
+              </h4>
+              <div className="flex items-center justify-between gap-1 mt-1 pt-1 border-t border-blue-200/60">
+                <span className="text-[11px] text-blue-700 font-semibold truncate flex items-center gap-1">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />
+                  {lowServiceCount.toLocaleString()} patrons &lt; 3.0
+                </span>
+                <span className="text-[10px] font-bold text-blue-600 opacity-80 group-hover:opacity-100 flex items-center gap-0.5">
+                  Drill down <ArrowDownRight className="w-3 h-3" />
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Row 2 - Card 5: Average Food Rating */}
+          <div
+            onClick={() => handleDrillDown('food')}
+            role="button"
+            tabIndex={0}
+            title="Click to drill-down to customers with Food Rating < 3.0"
+            className={`flex flex-col justify-between p-4 rounded-xl border transition-all cursor-pointer text-left select-none group ${
+              drillDownFilter === 'food'
+                ? 'bg-orange-100/70 border-orange-400 ring-2 ring-orange-400 shadow-xs'
+                : 'bg-orange-50/50 border-orange-200/70 hover:border-orange-400 hover:bg-orange-50 shadow-2xs'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-orange-800 font-semibold truncate">Avg Food Rate</span>
+              <div className="w-8 h-8 rounded-lg bg-orange-100 text-orange-700 flex items-center justify-center flex-shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                <Utensils className="w-4 h-4" />
+              </div>
+            </div>
+            <div>
+              <h4 className="text-xl sm:text-2xl font-bold text-orange-800 tracking-tight flex items-baseline gap-1">
+                {avgFoodRate} <span className="text-xs text-orange-600 font-semibold">/ 5.0</span>
+              </h4>
+              <div className="flex items-center justify-between gap-1 mt-1 pt-1 border-t border-orange-200/60">
+                <span className="text-[11px] text-orange-700 font-semibold truncate flex items-center gap-1">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-orange-500" />
+                  {lowFoodCount.toLocaleString()} patrons &lt; 3.0
+                </span>
+                <span className="text-[10px] font-bold text-orange-600 opacity-80 group-hover:opacity-100 flex items-center gap-0.5">
+                  Drill down <ArrowDownRight className="w-3 h-3" />
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Row 2 - Card 6: Average Ambience Rating */}
+          <div
+            onClick={() => handleDrillDown('ambience')}
+            role="button"
+            tabIndex={0}
+            title="Click to drill-down to customers with Ambience Rating < 3.0"
+            className={`flex flex-col justify-between p-4 rounded-xl border transition-all cursor-pointer text-left select-none group ${
+              drillDownFilter === 'ambience'
+                ? 'bg-purple-100/70 border-purple-400 ring-2 ring-purple-400 shadow-xs'
+                : 'bg-purple-50/50 border-purple-200/70 hover:border-purple-400 hover:bg-purple-50 shadow-2xs'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-purple-800 font-semibold truncate">Avg Ambience</span>
+              <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center flex-shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                <Sparkles className="w-4 h-4" />
+              </div>
+            </div>
+            <div>
+              <h4 className="text-xl sm:text-2xl font-bold text-purple-800 tracking-tight flex items-baseline gap-1">
+                {avgAmbienceRate} <span className="text-xs text-purple-600 font-semibold">/ 5.0</span>
+              </h4>
+              <div className="flex items-center justify-between gap-1 mt-1 pt-1 border-t border-purple-200/60">
+                <span className="text-[11px] text-purple-700 font-semibold truncate flex items-center gap-1">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-purple-500" />
+                  {lowAmbienceCount.toLocaleString()} patrons &lt; 3.0
+                </span>
+                <span className="text-[10px] font-bold text-purple-600 opacity-80 group-hover:opacity-100 flex items-center gap-0.5">
+                  Drill down <ArrowDownRight className="w-3 h-3" />
+                </span>
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
 
@@ -378,80 +717,380 @@ export default function ViewAnalytics({
       <div className={`grid grid-cols-1 ${showCuisine ? 'lg:grid-cols-3' : 'lg:grid-cols-2'} gap-6`}>
         
         {/* Chart 1 */}
-        <div className="bg-white border border-[#f0eae1] rounded-2xl p-5 shadow-xs flex flex-col">
-          <div className="mb-4">
-            <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <Activity className="w-4 h-4 text-[#e05a33]" />
-              Wait Time vs. Service Rating Correlation
-            </h4>
-            <p className="text-xs text-slate-500">Correlating table wait delay with staff service scores</p>
+        <div className="bg-white border border-[#f0eae1] rounded-2xl p-5 shadow-xs flex flex-col justify-between">
+          <div className="mb-3 flex items-start justify-between">
+            <div>
+              <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <Activity className="w-4 h-4 text-[#e05a33]" />
+                Wait Time vs. Service Rating Correlation
+              </h4>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Dual Y-axis dynamics across wait time buckets
+              </p>
+            </div>
+            <div className="hidden sm:flex items-center gap-2 text-[10px] font-semibold text-slate-500 bg-slate-50 px-2.5 py-1 rounded-md border border-slate-200">
+              <span className="text-amber-700">Left: 1-5 Scale</span>
+              <span>•</span>
+              <span className="text-emerald-700">Right: 0-100%</span>
+            </div>
           </div>
-          <div className="h-64 w-full">
+          <div className="h-64 sm:h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <ScatterChart margin={{ top: 10, right: 10, bottom: 10, left: -20 }}>
+              <LineChart data={waitTimeLineData} margin={{ top: 12, right: 12, bottom: 4, left: -14 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0eae1" opacity={0.8} />
-                <XAxis dataKey="waitTime" name="Wait Time" unit="m" stroke="#64748b" fontSize={10} />
-                <YAxis dataKey="serviceRating" name="Service Rating" domain={[1, 5]} stroke="#64748b" fontSize={10} />
-                <Tooltip
-                  cursor={{ strokeDasharray: '3 3' }}
-                  contentStyle={{ backgroundColor: '#ffffff', borderColor: '#f0eae1', borderRadius: '0.75rem', fontSize: '11px', color: '#0f172a', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                <XAxis dataKey="bucket" stroke="#64748b" fontSize={11} tickLine={false} />
+                <YAxis
+                  yAxisId="left"
+                  domain={[1, 5]}
+                  ticks={[1, 2, 3, 4, 5]}
+                  stroke="#64748b"
+                  fontSize={10}
+                  tickFormatter={(v) => `${v}.0`}
+                  width={28}
                 />
-                <Scatter name="Customers" data={scatterData} fill="#e05a33">
-                  {scatterData.map((entry, index) => (
-                    <Cell
-                      key={`cell-${index}`}
-                      fill={entry.satisfaction === 'Satisfied' ? '#10b981' : '#f43f5e'}
-                    />
-                  ))}
-                </Scatter>
-              </ScatterChart>
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  domain={[0, 100]}
+                  ticks={[0, 25, 50, 75, 100]}
+                  stroke="#64748b"
+                  fontSize={10}
+                  tickFormatter={(v) => `${v}%`}
+                  width={38}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#ffffff',
+                    borderColor: '#f0eae1',
+                    borderRadius: '0.75rem',
+                    fontSize: '11px',
+                    color: '#0f172a',
+                    boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)',
+                    padding: '8px 12px',
+                  }}
+                  formatter={(value: any, name: any) => {
+                    const label = String(name || '');
+                    if (value === null || value === undefined) return ['N/A', label];
+                    if (label === 'Satisfied' || label === 'Dissatisfied') {
+                      return [`${value}%`, label];
+                    }
+                    return [`${value} / 5.0`, label];
+                  }}
+                  labelFormatter={(label) => `Wait Time: ${label}`}
+                />
+                <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }} />
+                
+                {/* Left Y-Axis: 3 Average Rating lines */}
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="serviceRating"
+                  name="Service Rating"
+                  stroke="#f59e0b"
+                  strokeWidth={2.5}
+                  dot={{ r: 3.5, strokeWidth: 1.5, stroke: '#ffffff', fill: '#f59e0b' }}
+                  activeDot={{ r: 6 }}
+                />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="foodRating"
+                  name="Food Rating"
+                  stroke="#9333ea"
+                  strokeWidth={2}
+                  strokeDasharray="5 5"
+                  dot={{ r: 3.5, strokeWidth: 1.5, stroke: '#ffffff', fill: '#9333ea' }}
+                  activeDot={{ r: 6 }}
+                />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="ambienceRating"
+                  name="Ambience Rating"
+                  stroke="#64748b"
+                  strokeWidth={2}
+                  strokeDasharray="4 4"
+                  dot={{ r: 3.5, strokeWidth: 1.5, stroke: '#ffffff', fill: '#64748b' }}
+                  activeDot={{ r: 6 }}
+                />
+
+                {/* Right Y-Axis: 2 Customer Retention lines */}
+                <Line
+                  yAxisId="right"
+                  type="monotone"
+                  dataKey="satisfied"
+                  name="Satisfied"
+                  stroke="#10b981"
+                  strokeWidth={2.5}
+                  dot={{ r: 3.5, strokeWidth: 1.5, stroke: '#ffffff', fill: '#10b981' }}
+                  activeDot={{ r: 6 }}
+                />
+                <Line
+                  yAxisId="right"
+                  type="monotone"
+                  dataKey="dissatisfied"
+                  name="Dissatisfied"
+                  stroke="#ef4444"
+                  strokeWidth={2.5}
+                  dot={{ r: 3.5, strokeWidth: 1.5, stroke: '#ffffff', fill: '#ef4444' }}
+                  activeDot={{ r: 6 }}
+                />
+              </LineChart>
             </ResponsiveContainer>
           </div>
-          <div className="flex items-center justify-center gap-4 mt-3 text-xs">
-            <div className="flex items-center gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-              <span className="text-slate-600 font-medium">Satisfied</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-rose-500" />
-              <span className="text-slate-600 font-medium">Churn Risk</span>
-            </div>
+
+          {/* Chart 1 Bottom Action Row: Metadata on Left, Insights button on Right */}
+          <div className="flex items-center justify-between gap-3 mt-3 pt-3 border-t border-[#f0eae1]">
+            <span className="text-[11px] text-slate-400 font-medium truncate">
+              Operational Latency Threshold Analysis
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowChart1Insights((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer shadow-2xs flex-shrink-0 ${
+                showChart1Insights
+                  ? 'bg-[#e05a33] text-white shadow-xs ring-2 ring-[#e05a33]/20'
+                  : 'bg-[#faedd9] text-[#e05a33] hover:bg-[#f6dfc2] border border-[#f4dbb8]'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Insights</span>
+              {showChart1Insights ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
           </div>
+
+          {/* Chart 1 Dynamic Insights Panel */}
+          {showChart1Insights && (
+            <div className="mt-3 p-3.5 sm:p-4 rounded-xl bg-gradient-to-br from-[#fffdfa] to-[#faf4eb] border border-[#f5dfc0] shadow-xs space-y-3 animate-in fade-in slide-in-from-top-1 duration-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-lg bg-[#e05a33] text-white flex items-center justify-center shadow-2xs">
+                    <Sparkles className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-bold text-slate-900 leading-none">
+                      Wait Time &amp; Retention Insights
+                    </h5>
+                    <span className="text-[10px] text-slate-400 font-medium">
+                      Dynamically computed based on active top filters
+                    </span>
+                  </div>
+                </div>
+                <span className="text-[10px] font-bold text-[#e05a33] bg-[#faedd9] px-2 py-0.5 rounded-full border border-[#f4dbb8]">
+                  Key Summary
+                </span>
+              </div>
+
+              {/* 1. Key Metrics / Numbers */}
+              <div className="grid grid-cols-3 gap-2">
+                {chart1Insights.keyNumbers.map((k, idx) => (
+                  <div key={idx} className="bg-white/90 p-2 sm:p-2.5 rounded-lg border border-[#f0eae1] shadow-2xs">
+                    <span className="text-[10px] font-semibold text-slate-500 block truncate">{k.label}</span>
+                    <div className="text-sm sm:text-base font-bold text-slate-900 mt-0.5 tracking-tight">{k.value}</div>
+                    <span className="text-[9px] text-slate-400 block truncate mt-0.5">{k.sub}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* 2. Key Watch-out */}
+              <div className="flex items-start gap-2.5 bg-amber-50/80 border border-amber-200/80 rounded-lg p-2.5 text-xs text-amber-900">
+                <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="text-[10px] font-bold text-amber-900 uppercase tracking-wide">
+                    Key Watch-out
+                  </span>
+                  <p className="text-xs text-amber-900/90 leading-relaxed font-normal">
+                    {chart1Insights.watchOut}
+                  </p>
+                </div>
+              </div>
+
+              {/* 3. Manager Action */}
+              <div className="flex items-start gap-2.5 bg-emerald-50/80 border border-emerald-200/80 rounded-lg p-2.5 text-xs text-emerald-950">
+                <Lightbulb className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="text-[10px] font-bold text-emerald-900 uppercase tracking-wide">
+                    Manager Recommendation
+                  </span>
+                  <p className="text-xs text-emerald-950 leading-relaxed font-normal">
+                    {chart1Insights.recommendation}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Chart 2 */}
-        <div className="bg-white border border-[#f0eae1] rounded-2xl p-5 shadow-xs flex flex-col">
-          <div className="mb-4">
-            <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <Award className="w-4 h-4 text-amber-600" />
-              Satisfaction by Dining Occasion
-            </h4>
-            <p className="text-xs text-slate-500">Comparing outcomes across business, casual, &amp; celebrations</p>
+        <div className="bg-white border border-[#f0eae1] rounded-2xl p-5 shadow-xs flex flex-col justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+            <div>
+              <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <Award className="w-4 h-4 text-amber-600" />
+                Satisfaction by {
+                  satisfactionDimension === 'diningType'
+                    ? 'Dining Type'
+                    : satisfactionDimension === 'loyalty'
+                    ? 'Loyalty'
+                    : 'Dining Occasion'
+                }
+              </h4>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {satisfactionDimension === 'diningType' && 'Comparing outcomes across Dine-in vs. Takeaway'}
+                {satisfactionDimension === 'loyalty' && 'Comparing outcomes across Member vs. Non-Member'}
+                {satisfactionDimension === 'occasion' && 'Comparing outcomes across Business, Casual, & Celebration'}
+              </p>
+            </div>
+
+            {/* Pill-shaped interactive view toggles */}
+            <div className="inline-flex items-center p-0.5 bg-[#f4eee6] border border-[#e5dcce] rounded-full self-start sm:self-auto shadow-2xs flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => setSatisfactionDimension('diningType')}
+                className={`px-3 py-1 text-xs font-semibold rounded-full transition-all cursor-pointer ${
+                  satisfactionDimension === 'diningType'
+                    ? 'bg-[#e05a33] text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                }`}
+              >
+                Dining Type
+              </button>
+              <button
+                type="button"
+                onClick={() => setSatisfactionDimension('loyalty')}
+                className={`px-3 py-1 text-xs font-semibold rounded-full transition-all cursor-pointer ${
+                  satisfactionDimension === 'loyalty'
+                    ? 'bg-[#e05a33] text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                }`}
+              >
+                Loyalty
+              </button>
+              <button
+                type="button"
+                onClick={() => setSatisfactionDimension('occasion')}
+                className={`px-3 py-1 text-xs font-semibold rounded-full transition-all cursor-pointer ${
+                  satisfactionDimension === 'occasion'
+                    ? 'bg-[#e05a33] text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                }`}
+              >
+                Occasion
+              </button>
+            </div>
           </div>
-          <div className="h-64 w-full">
+
+          <div className="h-64 sm:h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={occasionChartData} margin={{ top: 10, right: 10, bottom: 10, left: -25 }}>
+              <BarChart data={satisfactionChartData} margin={{ top: 10, right: 10, bottom: 10, left: -25 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0eae1" opacity={0.8} />
-                <XAxis dataKey="occasion" stroke="#64748b" fontSize={10} />
+                <XAxis dataKey="label" stroke="#64748b" fontSize={11} tickLine={false} />
                 <YAxis stroke="#64748b" fontSize={10} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#ffffff', borderColor: '#f0eae1', borderRadius: '0.75rem', fontSize: '11px', color: '#0f172a', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                  contentStyle={{
+                    backgroundColor: '#ffffff',
+                    borderColor: '#f0eae1',
+                    borderRadius: '0.75rem',
+                    fontSize: '11px',
+                    color: '#0f172a',
+                    boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)',
+                  }}
+                  formatter={(value: any, name: any) => [`${value} patrons`, name]}
                 />
                 <Bar dataKey="satisfied" name="Satisfied" fill="#10b981" stackId="a" radius={[0, 0, 4, 4]} />
-                <Bar dataKey="churnRisk" name="Churn Risk" fill="#f43f5e" stackId="a" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="churnRisk" name="Dissatisfied" fill="#f43f5e" stackId="a" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
-          <div className="flex items-center justify-center gap-4 mt-3 text-xs">
-            <div className="flex items-center gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-              <span className="text-slate-600 font-medium">Satisfied</span>
+          {/* Chart 2 Bottom Action Row: Legend on Left, Insights button on Right */}
+          <div className="flex items-center justify-between gap-3 mt-3 pt-3 border-t border-[#f0eae1] text-xs">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                <span className="text-slate-600 font-medium text-xs">Satisfied</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+                <span className="text-slate-600 font-medium text-xs">Dissatisfied</span>
+              </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-rose-500" />
-              <span className="text-slate-600 font-medium">Churn Risk</span>
-            </div>
+
+            {/* Insights button in the bottom-right */}
+            <button
+              type="button"
+              onClick={() => setShowChart2Insights((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer shadow-2xs flex-shrink-0 ${
+                showChart2Insights
+                  ? 'bg-[#e05a33] text-white shadow-xs ring-2 ring-[#e05a33]/20'
+                  : 'bg-[#faedd9] text-[#e05a33] hover:bg-[#f6dfc2] border border-[#f4dbb8]'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Insights</span>
+              {showChart2Insights ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
           </div>
+
+          {/* Chart 2 Dynamic Insights Panel */}
+          {showChart2Insights && (
+            <div className="mt-3 p-3.5 sm:p-4 rounded-xl bg-gradient-to-br from-[#fffdfa] to-[#faf4eb] border border-[#f5dfc0] shadow-xs space-y-3 animate-in fade-in slide-in-from-top-1 duration-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-lg bg-[#e05a33] text-white flex items-center justify-center shadow-2xs">
+                    <Sparkles className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-bold text-slate-900 leading-none">
+                      {chart2Insights.dimensionTitle}
+                    </h5>
+                    <span className="text-[10px] text-slate-400 font-medium">
+                      Dimension &amp; active filter reactive
+                    </span>
+                  </div>
+                </div>
+                <span className="text-[10px] font-bold text-[#e05a33] bg-[#faedd9] px-2 py-0.5 rounded-full border border-[#f4dbb8]">
+                  Dimension Breakdown
+                </span>
+              </div>
+
+              {/* 1. Key Metrics / Numbers */}
+              <div className="grid grid-cols-3 gap-2">
+                {chart2Insights.keyNumbers.map((k, idx) => (
+                  <div key={idx} className="bg-white/90 p-2 sm:p-2.5 rounded-lg border border-[#f0eae1] shadow-2xs">
+                    <span className="text-[10px] font-semibold text-slate-500 block truncate">{k.label}</span>
+                    <div className="text-sm sm:text-base font-bold text-slate-900 mt-0.5 tracking-tight">{k.value}</div>
+                    <span className="text-[9px] text-slate-400 block truncate mt-0.5">{k.sub}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* 2. Key Watch-out */}
+              <div className="flex items-start gap-2.5 bg-amber-50/80 border border-amber-200/80 rounded-lg p-2.5 text-xs text-amber-900">
+                <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="text-[10px] font-bold text-amber-900 uppercase tracking-wide">
+                    Key Watch-out
+                  </span>
+                  <p className="text-xs text-amber-900/90 leading-relaxed font-normal">
+                    {chart2Insights.watchOut}
+                  </p>
+                </div>
+              </div>
+
+              {/* 3. Manager Action */}
+              <div className="flex items-start gap-2.5 bg-emerald-50/80 border border-emerald-200/80 rounded-lg p-2.5 text-xs text-emerald-950">
+                <Lightbulb className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="text-[10px] font-bold text-emerald-900 uppercase tracking-wide">
+                    Manager Recommendation
+                  </span>
+                  <p className="text-xs text-emerald-950 leading-relaxed font-normal">
+                    {chart2Insights.recommendation}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Chart 3 */}
@@ -495,7 +1134,14 @@ export default function ViewAnalytics({
       </div>
 
       {/* Searchable Customer Table */}
-      <CustomerTable data={filteredData} onSelectForCopilot={handleSelectCustomer} showCuisine={showCuisine} />
+      <CustomerTable
+        data={explorerTableData}
+        onSelectForCopilot={handleSelectCustomer}
+        showCuisine={showCuisine}
+        onBatchAnalyze={onBatchAnalyze}
+        lowScoreFilter={activeDrillDownInfo}
+        onClearLowScoreFilter={handleClearDrillDown}
+      />
 
       {/* Slide-Over Drawer for AI Incident Diagnostics */}
       {selectedCustomer && (
@@ -543,7 +1189,7 @@ export default function ViewAnalytics({
                       ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                       : 'bg-rose-50 text-rose-700 border border-rose-200'
                   }`}>
-                    {selectedCustomer.HighSatisfaction === 1 ? 'Satisfied' : 'Churn Risk'}
+                    {selectedCustomer.HighSatisfaction === 1 ? 'Satisfied' : 'Dissatisfied'}
                   </span>
                 </div>
 

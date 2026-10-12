@@ -8,7 +8,9 @@ import {
   RefreshCcw,
   Zap,
   BarChart2,
-  X
+  X,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -29,13 +31,21 @@ interface ViewCopilotProps {
   messages: Array<{ role: 'user' | 'model'; content: string }>;
   setMessages: React.Dispatch<React.SetStateAction<Array<{ role: 'user' | 'model'; content: string }>>>;
   onClose?: () => void;
+  isMaximized?: boolean;
+  onToggleMaximize?: () => void;
+  currentWidth?: number;
+  onSetWidthPreset?: (width: number) => void;
 }
 
 export default function ViewCopilot({
   mode,
   messages,
   setMessages,
-  onClose
+  onClose,
+  isMaximized,
+  onToggleMaximize,
+  currentWidth,
+  onSetWidthPreset,
 }: ViewCopilotProps) {
   const [inputMessage, setInputMessage] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
@@ -144,8 +154,21 @@ export default function ViewCopilot({
     return (
       <div className="space-y-1.5">
         {lines.map((line, idx) => {
-          const isBullet = line.trim().startsWith('-') || line.trim().startsWith('*');
-          const cleanedLine = isBullet ? line.trim().substring(1).trim() : line;
+          const trimmed = line.trim();
+          if (!trimmed) return null;
+
+          if (trimmed.startsWith('### ')) {
+            const headingText = trimmed.replace(/^###\s+/, '');
+            return (
+              <h4 key={idx} className="text-[11px] font-bold text-slate-800 uppercase tracking-wider mt-2.5 mb-0.5 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#e05a33]"></span>
+                {headingText}
+              </h4>
+            );
+          }
+
+          const isBullet = trimmed.startsWith('-') || trimmed.startsWith('*');
+          const cleanedLine = isBullet ? trimmed.substring(1).trim() : trimmed;
           const parts = cleanedLine.split(/(\*\*.*?\*\*)/g);
 
           const contentNodes = parts.map((part, pIdx) => {
@@ -161,13 +184,13 @@ export default function ViewCopilot({
 
           if (isBullet) {
             return (
-              <div key={idx} className="flex items-start gap-2 pl-1 my-1">
-                <span className="text-[#e05a33] font-bold mt-0.5">•</span>
-                <div>{contentNodes}</div>
+              <div key={idx} className="flex items-start gap-2 pl-1 my-0.5">
+                <span className="text-[#e05a33] font-bold mt-0.5 text-xs">•</span>
+                <div className="text-xs text-slate-700 leading-relaxed">{contentNodes}</div>
               </div>
             );
           }
-          return <p key={idx} className="leading-relaxed">{contentNodes}</p>;
+          return <p key={idx} className="leading-relaxed text-xs text-slate-700">{contentNodes}</p>;
         })}
       </div>
     );
@@ -242,7 +265,7 @@ export default function ViewCopilot({
         { name: '31-45m', value: 85.3, fill: '#f43f5e' },
         { name: '45m+', value: 97.8, fill: '#be123c' }
       ];
-      return buildChartComponent('Churn Risk Rate (%) by Wait Time Bands', chartData, '%');
+      return buildChartComponent('Dissatisfied Rate (%) by Wait Time Bands', chartData, '%');
     }
 
     // 3. Drop-off by Intervals
@@ -290,7 +313,7 @@ export default function ViewCopilot({
     if (msgContent.includes('23.9 mins') && msgContent.includes('31.1 mins')) {
       const chartData = [
         { name: 'Highly Satisfied', value: 23.9, fill: '#10b981' },
-        { name: 'Churn Risk', value: 31.1, fill: '#f43f5e' }
+        { name: 'Dissatisfied', value: 31.1, fill: '#f43f5e' }
       ];
       return buildChartComponent('Average Wait Time Comparison (Minutes)', chartData, 'm');
     }
@@ -303,11 +326,11 @@ export default function ViewCopilot({
   }
 
   return (
-    <div className="space-y-6 pb-0 h-full">
-      <div className="bg-white border border-[#f0eae1] rounded-none md:rounded-3xl shadow-none md:shadow-xs flex flex-col h-full overflow-hidden">
+    <div className="h-full flex flex-col">
+      <div className="bg-white border border-[#f0eae1] rounded-2xl md:rounded-3xl shadow-none md:shadow-xs flex flex-col h-full overflow-hidden">
         
         {/* Header */}
-        <div className="p-4 bg-[#f8f5ee] border-b border-[#f0eae1] flex items-center justify-between">
+        <div className="p-3 sm:p-4 bg-[#f8f5ee] border-b border-[#f0eae1] flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-[#e05a33] flex items-center justify-center shadow-sm">
               <Bot className="w-4 h-4 text-white" />
@@ -317,17 +340,56 @@ export default function ViewCopilot({
               <p className="text-[11px] text-slate-500 font-medium">Autonomous operational analytics</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            {/* Quick Size Presets */}
+            {onSetWidthPreset && (
+              <div className="hidden sm:inline-flex items-center bg-white border border-[#f0eae1] rounded-lg p-0.5 text-[10px] font-bold shadow-2xs">
+                <button
+                  onClick={() => onSetWidthPreset(480)}
+                  className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+                    !isMaximized && currentWidth && currentWidth < 620
+                      ? 'bg-[#faedd9] text-[#e05a33]'
+                      : 'text-slate-500 hover:text-slate-900'
+                  }`}
+                  title="Standard window width (480px)"
+                >
+                  Standard
+                </button>
+                <button
+                  onClick={() => onSetWidthPreset(740)}
+                  className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+                    !isMaximized && currentWidth && currentWidth >= 620 && currentWidth < 900
+                      ? 'bg-[#faedd9] text-[#e05a33]'
+                      : 'text-slate-500 hover:text-slate-900'
+                  }`}
+                  title="Wide window width (740px)"
+                >
+                  Wide
+                </button>
+              </div>
+            )}
+
+            {/* Maximize / Restore Toggle */}
+            {onToggleMaximize && (
+              <button
+                onClick={onToggleMaximize}
+                className="w-7 h-7 rounded-lg bg-white border border-[#f0eae1] text-slate-600 hover:text-slate-900 hover:bg-[#f4ebe1] flex items-center justify-center transition-all cursor-pointer shadow-2xs"
+                title={isMaximized ? "Restore window size" : "Expand window (maximize)"}
+              >
+                {isMaximized ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+              </button>
+            )}
+
             <button
               onClick={() => setMessages([{ role: 'model', content: 'Chat history reset. How can I help you analyze dining operations today?' }])}
-              className="text-[11px] text-slate-600 hover:text-[#e05a33] px-2.5 py-1.5 bg-white border border-[#f0eae1] rounded-lg font-bold shadow-2xs hover:bg-orange-50 transition-colors cursor-pointer"
+              className="text-[11px] text-slate-600 hover:text-[#e05a33] px-2 py-1 bg-white border border-[#f0eae1] rounded-lg font-bold shadow-2xs hover:bg-orange-50 transition-colors cursor-pointer"
             >
               Reset
             </button>
             {onClose && (
               <button
                 onClick={onClose}
-                className="w-7 h-7 rounded-lg bg-white border border-[#f0eae1] text-slate-600 hover:text-slate-900 hover:bg-[#f4ebe1] flex items-center justify-center transition-all cursor-pointer"
+                className="w-7 h-7 rounded-lg bg-white border border-[#f0eae1] text-slate-600 hover:text-slate-900 hover:bg-[#f4ebe1] flex items-center justify-center transition-all cursor-pointer shadow-2xs"
                 title="Close Copilot Panel"
               >
                 <X className="w-4 h-4" />

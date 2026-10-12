@@ -1,6 +1,6 @@
 {
-  "name": "Remix Remix BUSM2725_A3_Group27",
-  "description": "Satisfaction",
+  "name": "DineIntellect",
+  "description": "Enterprise AI decision-support intelligence and customer retention copilot for restaurant general managers.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

@@ -1,9 +1,9 @@
-import { GoogleGenAI } from '@google/genai';
 import { NextRequest, NextResponse } from 'next/server';
+import { getGeminiClient, resolveGeminiModel } from '@/lib/gemini';
 
 export async function POST(req: NextRequest) {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+    const ai = getGeminiClient();
     const body = await req.json();
     const { customer } = body;
 
@@ -26,7 +26,7 @@ INCIDENT METRICS:
 - Ratings: Service ${customer.ServiceRating}/5, Food ${customer.FoodRating}/5, Ambiance ${customer.AmbianceRating}/5
 - Average Spend: $${avgSpend}
 - Loyalty Member: ${customer.LoyaltyProgramMember === 1 ? 'Yes' : 'No'}
-- Status: ${customer.HighSatisfaction === 1 ? 'Satisfied' : 'Churn Risk'}
+- Status: ${customer.HighSatisfaction === 1 ? 'Satisfied' : 'Dissatisfied'}
 
 OUTPUT FORMAT:
 Return ONLY a valid JSON object matching this exact schema:
@@ -45,24 +45,36 @@ Return ONLY a valid JSON object matching this exact schema:
 }
 `;
 
-    let jsonResult;
+    let jsonResult = null;
 
-    try {
-      const response = await ai.models.generateContent({
-        model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.1,
-        },
-      });
+    if (ai) {
+      const primaryModel = resolveGeminiModel();
+      const candidateModels = Array.from(new Set([primaryModel, 'gemini-3.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest']));
 
-      const text = response.text;
-      if (!text) throw new Error('Empty response');
-      jsonResult = JSON.parse(text);
+      for (const modelToTry of candidateModels) {
+        try {
+          const response = await ai.models.generateContent({
+            model: modelToTry,
+            contents: prompt,
+            config: {
+              responseMimeType: 'application/json',
+              temperature: 0.1,
+            },
+          });
 
-    } catch (apiError) {
-      console.warn('Using deterministic fallback:', apiError);
+          const text = response.text;
+          if (text) {
+            jsonResult = JSON.parse(text);
+            break;
+          }
+        } catch (apiError: any) {
+          console.warn(`[DineIntellect] Model ${modelToTry} attempt notice:`, apiError?.message || apiError);
+        }
+      }
+    }
+
+    if (!jsonResult) {
+      console.warn('[DineIntellect] Using deterministic fallback for diagnosis');
       const isCritical = customer.WaitTime > 35 || customer.ServiceRating <= 2 || customer.FoodRating <= 2;
       
       jsonResult = {
@@ -73,7 +85,7 @@ Return ONLY a valid JSON object matching this exact schema:
           ? "Excessive Order & Expediting Delay" 
           : "Substandard Food Quality Consistency",
         metrics_analysis: [
-          `Wait time of ${waitMins}m with Service rating ${customer.ServiceRating}/5 directly triggered churn risk.`,
+          `Wait time of ${waitMins}m with Service rating ${customer.ServiceRating}/5 directly triggered dissatisfaction.`,
           `Average spend of $${avgSpend} flags this patron as an immediate recovery priority.`
         ],
         internal_corrective_actions: [
